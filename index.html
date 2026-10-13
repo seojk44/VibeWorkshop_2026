@@ -172,6 +172,8 @@
     var text = document.getElementById('textInput').value;
     var resultEl = document.getElementById('result');
     var noSpaceLength = text.replace(/\s/g, '').length;
+    var trimmed = text.trim();
+    var wordCount = trimmed === '' ? 0 : trimmed.split(/\s+/).length;
     var limit = parseInt(document.getElementById('limitInput').value, 10);
 
     function num(n) {
@@ -179,7 +181,8 @@
       return '<strong' + (over ? ' class="over"' : '') + '>' + n + '</strong>';
     }
 
-    resultEl.innerHTML = '공백 포함: ' + num(text.length) + '자 &nbsp;|&nbsp; 공백 제외: ' + num(noSpaceLength) + '자';
+    resultEl.innerHTML = '공백 포함: ' + num(text.length) + '자 &nbsp;|&nbsp; 공백 제외: ' + num(noSpaceLength) + '자' +
+      '<br>단어 수: <strong>' + wordCount + '</strong>개';
     resultEl.style.display = 'block';
   }
 
