@@ -209,8 +209,11 @@
     const TRYSTERO_URL = 'https://cdn.jsdelivr.net/npm/trystero@0.22.0/+esm';
     const POSE_INTERVAL_MS = 200;
     const PEER_TIMEOUT_MS = 5000;
-    const SPAWN_RADIUS = 5;
+    const SPAWN_START_Z = 72;
     const SPAWN_GAP = 1.5;
+    const WALK_HALF_WIDTH = 5;
+    const BODY_RADIUS = 0.4;
+    const FIRE_BLOCK_RADIUS = 1.3;
     const peopleLabel = document.getElementById('peopleCount');
     const peers = new Map();
     let roomState = 'connecting';
@@ -400,6 +403,7 @@
       trees.push({
         tree,
         leaves,
+        trunkRadius: 0.25 * size,
         phase: Math.random() * Math.PI * 2,
         sway: 0.03 + Math.random() * 0.02
       });
@@ -491,6 +495,12 @@
     const ground = createWalkGround();
     const campfire = createCampfire();
     createTreeRows();
+    const walkObstacles = [
+      { x: 0, z: 0, radius: FIRE_BLOCK_RADIUS },
+      ...trees
+        .filter((item) => Math.abs(item.tree.position.x) < WALK_HALF_WIDTH + 1)
+        .map((item) => ({ x: item.tree.position.x, z: item.tree.position.z, radius: item.trunkRadius }))
+    ];
     const stars = createStars();
 
     const TIME_SETTINGS = {
@@ -800,30 +810,58 @@
       }
     }
 
+    function readSpawnSlots() {
+      const slots = [];
+      for (let row = 0; row < 6; row++) {
+        for (const column of [-1, 0, 1]) {
+          slots.push({ x: column, z: SPAWN_START_Z - row * 1.5 });
+        }
+      }
+      return slots;
+    }
+
     function pickSpawnPoint(others) {
-      const offset = Math.random() * Math.PI * 2;
-      let best = null;
+      const slots = readSpawnSlots();
+      if (!others.length) return slots[Math.floor(Math.random() * 3)];
+      let best = slots[0];
       let bestGap = -1;
-      for (let i = 0; i < 24; i++) {
-        const angle = offset + (i / 24) * Math.PI * 2;
-        const x = Math.cos(angle) * SPAWN_RADIUS;
-        const z = Math.sin(angle) * SPAWN_RADIUS;
-        const gap = others.length
-          ? Math.min(...others.map((other) => Math.hypot(other.x - x, other.z - z)))
-          : Infinity;
+      for (const slot of slots) {
+        const gap = Math.min(...others.map((other) => Math.hypot(other.x - slot.x, other.z - slot.z)));
         if (gap > bestGap) {
-          best = { x, z };
+          best = slot;
           bestGap = gap;
         }
-        if (!others.length) break;
       }
       return best;
     }
 
     function placeAtSpawn(point) {
       character.position.set(point.x, 0, point.z);
-      character.rotation.y = Math.atan2(-point.x, -point.z);
+      character.rotation.y = Math.PI;
       walkTarget = null;
+    }
+
+    function keepInWalkArea(point, obstacles) {
+      const limitX = WALK_HALF_WIDTH;
+      const limitZ = GROUND_HALF_LENGTH - 1;
+      point.x = Math.max(-limitX, Math.min(limitX, point.x));
+      point.z = Math.max(-limitZ, Math.min(limitZ, point.z));
+      for (const obstacle of obstacles) {
+        const dx = point.x - obstacle.x;
+        const dz = point.z - obstacle.z;
+        const minDistance = obstacle.radius + BODY_RADIUS;
+        const distance = Math.hypot(dx, dz);
+        if (distance >= minDistance) continue;
+        if (distance < 1e-6) {
+          point.x = obstacle.x + minDistance;
+        } else {
+          point.x = obstacle.x + (dx / distance) * minDistance;
+          point.z = obstacle.z + (dz / distance) * minDistance;
+        }
+      }
+      point.x = Math.max(-limitX, Math.min(limitX, point.x));
+      point.z = Math.max(-limitZ, Math.min(limitZ, point.z));
+      return point;
     }
 
     function readMyAge() {
@@ -1176,11 +1214,17 @@
         } else {
           turnToward(Math.atan2(dx, dz), TURN_SPEED * 2 * delta);
           const step = Math.min(WALK_SPEED * delta, distance);
+          const beforeX = character.position.x;
+          const beforeZ = character.position.z;
           character.position.x += (dx / distance) * step;
           character.position.z += (dz / distance) * step;
+          keepInWalkArea(character.position, walkObstacles);
+          const moved = Math.hypot(character.position.x - beforeX, character.position.z - beforeZ);
+          if (moved < step * 0.2) walkTarget = null;
           moving = true;
         }
       }
+      keepInWalkArea(character.position, walkObstacles);
 
       const doll = character.userData.doll;
       if (moving) hasMoved = true;
@@ -1225,8 +1269,9 @@
     function startWalkTo(event) {
       const point = pickGroundPoint(event);
       if (!point) return;
-      walkTarget = new THREE.Vector3(point.x, 0, point.z);
-      targetMarker.position.set(point.x, 0.03, point.z);
+      const target = keepInWalkArea({ x: point.x, z: point.z }, walkObstacles);
+      walkTarget = new THREE.Vector3(target.x, 0, target.z);
+      targetMarker.position.set(target.x, 0.03, target.z);
       hideHint();
     }
 
