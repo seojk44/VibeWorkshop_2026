@@ -177,7 +177,9 @@
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-    const GROUND_RADIUS = 30;
+    const GROUND_HALF_WIDTH = 30;
+    const GROUND_HALF_LENGTH = 80;
+    const PATH_WIDTH = 3.2;
     const WALK_SPEED = 3.5;
     const TURN_SPEED = 2.6;
     const CAMERA_DISTANCE = 7;
@@ -260,23 +262,23 @@
     moonLight.position.set(-20, 30, -10);
     scene.add(moonLight);
 
-    function createGround() {
+    function createWalkGround() {
       const ground = new THREE.Mesh(
-        new THREE.CircleGeometry(GROUND_RADIUS, 64),
+        new THREE.PlaneGeometry(GROUND_HALF_WIDTH * 2, GROUND_HALF_LENGTH * 2),
         new THREE.MeshStandardMaterial({ color: 0x1b261a, roughness: 1 })
       );
       ground.rotation.x = -Math.PI / 2;
       ground.receiveShadow = true;
       scene.add(ground);
 
-      const dirt = new THREE.Mesh(
-        new THREE.CircleGeometry(3.2, 48),
-        new THREE.MeshStandardMaterial({ color: 0x2e2419, roughness: 1 })
+      const path = new THREE.Mesh(
+        new THREE.PlaneGeometry(PATH_WIDTH, GROUND_HALF_LENGTH * 2),
+        new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 1 })
       );
-      dirt.rotation.x = -Math.PI / 2;
-      dirt.position.y = 0.01;
-      dirt.receiveShadow = true;
-      scene.add(dirt);
+      path.rotation.x = -Math.PI / 2;
+      path.position.y = 0.01;
+      path.receiveShadow = true;
+      scene.add(path);
 
       return ground;
     }
@@ -366,38 +368,61 @@
       return { flames, light, glow };
     }
 
-    function createTree(x, z, size) {
+    const treeParts = {
+      trunkGeometry: new THREE.CylinderGeometry(0.18, 0.25, 1.4, 8),
+      trunkMaterial: new THREE.MeshStandardMaterial({ color: 0x3a2717, roughness: 1 }),
+      leafGeometries: [0, 1, 2].map((layer) => new THREE.ConeGeometry(1.4 - layer * 0.35, 1.8, 10)),
+      leafMaterial: new THREE.MeshStandardMaterial({ color: 0x15301f, roughness: 1 })
+    };
+    const trees = [];
+
+    function createTree(x, z, size, castShadow) {
       const tree = new THREE.Group();
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.18 * size, 0.25 * size, 1.4 * size, 8),
-        new THREE.MeshStandardMaterial({ color: 0x3a2717, roughness: 1 })
-      );
-      trunk.position.y = 0.7 * size;
-      trunk.castShadow = true;
+      const trunk = new THREE.Mesh(treeParts.trunkGeometry, treeParts.trunkMaterial);
+      trunk.position.y = 0.7;
+      trunk.castShadow = castShadow;
       tree.add(trunk);
 
-      const leafMaterial = new THREE.MeshStandardMaterial({ color: 0x15301f, roughness: 1 });
-      for (let layer = 0; layer < 3; layer++) {
-        const leaves = new THREE.Mesh(
-          new THREE.ConeGeometry((1.4 - layer * 0.35) * size, 1.8 * size, 10),
-          leafMaterial
-        );
-        leaves.position.y = (1.7 + layer * 0.9) * size;
-        leaves.castShadow = true;
-        tree.add(leaves);
-      }
+      const leaves = new THREE.Group();
+      leaves.position.y = 1.4;
+      treeParts.leafGeometries.forEach((geometry, layer) => {
+        const cone = new THREE.Mesh(geometry, treeParts.leafMaterial);
+        cone.position.y = 0.3 + layer * 0.9;
+        cone.castShadow = castShadow;
+        leaves.add(cone);
+      });
+      tree.add(leaves);
 
+      tree.scale.setScalar(size);
       tree.position.set(x, 0, z);
       tree.rotation.y = Math.random() * Math.PI;
       scene.add(tree);
+      trees.push({
+        tree,
+        leaves,
+        phase: Math.random() * Math.PI * 2,
+        sway: 0.03 + Math.random() * 0.02
+      });
     }
 
-    function createTrees() {
-      const count = 11;
-      for (let i = 0; i < count; i++) {
-        const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
-        const distance = 10 + Math.random() * 9;
-        createTree(Math.cos(angle) * distance, Math.sin(angle) * distance, 0.9 + Math.random() * 0.7);
+    function createTreeRows() {
+      const pathEdge = PATH_WIDTH / 2;
+      for (let z = -GROUND_HALF_LENGTH + 4; z <= GROUND_HALF_LENGTH - 4; z += 6) {
+        for (const side of [-1, 1]) {
+          const nearX = side * (pathEdge + 1 + Math.random() * 1.4);
+          createTree(nearX, z + (Math.random() - 0.5) * 2, 0.9 + Math.random() * 0.5, true);
+          if (Math.random() < 0.6) {
+            const farX = side * (6 + Math.random() * 8);
+            createTree(farX, z + (Math.random() - 0.5) * 4, 1 + Math.random() * 0.7, false);
+          }
+        }
+      }
+    }
+
+    function swayLeaves(time) {
+      for (const item of trees) {
+        item.leaves.rotation.x = Math.sin(time * 1.1 + item.phase) * item.sway;
+        item.leaves.rotation.z = Math.sin(time * 0.8 + item.phase * 1.7) * item.sway * 0.7;
       }
     }
 
@@ -463,9 +488,9 @@
       return marker;
     }
 
-    const ground = createGround();
+    const ground = createWalkGround();
     const campfire = createCampfire();
-    createTrees();
+    createTreeRows();
     const stars = createStars();
 
     const TIME_SETTINGS = {
@@ -817,10 +842,9 @@
       if (!data || typeof data !== 'object') return null;
       const { x, z, ry, age } = data;
       if (![x, z, ry, age].every(Number.isFinite)) return null;
-      const limit = GROUND_RADIUS - 0.5;
-      const distance = Math.hypot(x, z);
-      const scale = distance > limit ? limit / distance : 1;
-      return { x: x * scale, z: z * scale, ry, age };
+      const clampedX = THREE.MathUtils.clamp(x, -GROUND_HALF_WIDTH + 0.5, GROUND_HALF_WIDTH - 0.5);
+      const clampedZ = THREE.MathUtils.clamp(z, -GROUND_HALF_LENGTH + 0.5, GROUND_HALF_LENGTH - 0.5);
+      return { x: clampedX, z: clampedZ, ry, age };
     }
 
     function pickPeerColor(peerId) {
@@ -1234,6 +1258,7 @@
       updatePeers(delta, time);
       updateLogButton();
       applyTimeOfDay(delta);
+      swayLeaves(time);
       flickerFire(time);
       followCamera(delta, false);
       placeChatBubbles();
