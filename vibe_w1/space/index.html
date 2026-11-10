@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>온라인 모닥불</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #05070f;
+      color: #e9dcc6;
+      font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    }
+    canvas {
+      display: block;
+      touch-action: none;
+    }
+    #hint {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      max-width: calc(100% - 32px);
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: rgba(10, 12, 24, 0.6);
+      font-size: 14px;
+      text-align: center;
+      pointer-events: none;
+      transition: opacity 1.5s;
+    }
+    #hint.hidden {
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="hint">three.js를 불러오는 중…</div>
+
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+    const GROUND_RADIUS = 30;
+    const WALK_SPEED = 3.5;
+    const TURN_SPEED = 2.6;
+    const CAMERA_DISTANCE = 7;
+    const CAMERA_HEIGHT = 3.6;
+
+    const hint = document.getElementById('hint');
+    const pressedKeys = new Set();
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+
+    // 장면, 카메라, 렌더러
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x070b1a);
+    scene.fog = new THREE.FogExp2(0x070b1a, 0.045);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
+
+    scene.add(new THREE.HemisphereLight(0x3a4a7a, 0x0b0f08, 0.35));
+    const moonLight = new THREE.DirectionalLight(0x8fa6d8, 0.25);
+    moonLight.position.set(-20, 30, -10);
+    scene.add(moonLight);
+
+    function createGround() {
+      const ground = new THREE.Mesh(
+        new THREE.CircleGeometry(GROUND_RADIUS, 64),
+        new THREE.MeshStandardMaterial({ color: 0x1b261a, roughness: 1 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      const dirt = new THREE.Mesh(
+        new THREE.CircleGeometry(3.2, 48),
+        new THREE.MeshStandardMaterial({ color: 0x2e2419, roughness: 1 })
+      );
+      dirt.rotation.x = -Math.PI / 2;
+      dirt.position.y = 0.01;
+      dirt.receiveShadow = true;
+      scene.add(dirt);
+
+      return ground;
+    }
+
+    function createGlowTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 128;
+      const context = canvas.getContext('2d');
+      const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
+      gradient.addColorStop(0, 'rgba(255, 170, 80, 0.9)');
+      gradient.addColorStop(0.4, 'rgba(255, 110, 40, 0.35)');
+      gradient.addColorStop(1, 'rgba(255, 80, 20, 0)');
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    function createCampfire() {
+      const fire = new THREE.Group();
+
+      const stoneMaterial = new THREE.MeshStandardMaterial({ color: 0x5b5752, roughness: 0.9 });
+      for (let i = 0; i < 11; i++) {
+        const angle = (i / 11) * Math.PI * 2;
+        const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.22 + Math.random() * 0.08), stoneMaterial);
+        stone.position.set(Math.cos(angle) * 1.05, 0.12, Math.sin(angle) * 1.05);
+        stone.rotation.set(Math.random(), Math.random(), Math.random());
+        stone.castShadow = true;
+        fire.add(stone);
+      }
+
+      const logMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2f1b, roughness: 0.95 });
+      for (let i = 0; i < 4; i++) {
+        const log = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 1.5, 10), logMaterial);
+        log.rotation.z = Math.PI / 2 - 0.35;
+        log.rotation.y = (i / 4) * Math.PI;
+        log.position.y = 0.3;
+        fire.add(log);
+      }
+
+      const flames = [];
+      const flameSettings = [
+        { color: 0xff5a1f, radius: 0.5, height: 1.5, x: 0, z: 0 },
+        { color: 0xff8a2a, radius: 0.35, height: 1.2, x: 0.2, z: 0.1 },
+        { color: 0xff8a2a, radius: 0.32, height: 1.1, x: -0.18, z: -0.12 },
+        { color: 0xffd36b, radius: 0.24, height: 0.9, x: 0, z: 0 }
+      ];
+      for (const setting of flameSettings) {
+        const flame = new THREE.Mesh(
+          new THREE.ConeGeometry(setting.radius, setting.height, 16, 1, true),
+          new THREE.MeshBasicMaterial({
+            color: setting.color,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide
+          })
+        );
+        flame.geometry.translate(0, setting.height / 2, 0);
+        flame.position.set(setting.x, 0.25, setting.z);
+        flame.userData.phase = Math.random() * Math.PI * 2;
+        fire.add(flame);
+        flames.push(flame);
+      }
+
+      const glow = new THREE.Mesh(
+        new THREE.PlaneGeometry(9, 9),
+        new THREE.MeshBasicMaterial({
+          map: createGlowTexture(),
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false
+        })
+      );
+      glow.rotation.x = -Math.PI / 2;
+      glow.position.y = 0.02;
+      fire.add(glow);
+
+      const light = new THREE.PointLight(0xff8a3d, 60, 30, 2);
+      light.position.y = 1.1;
+      light.castShadow = true;
+      light.shadow.mapSize.set(512, 512);
+      light.shadow.bias = -0.003;
+      fire.add(light);
+
+      scene.add(fire);
+      return { flames, light, glow };
+    }
+
+    function createTree(x, z, size) {
+      const tree = new THREE.Group();
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18 * size, 0.25 * size, 1.4 * size, 8),
+        new THREE.MeshStandardMaterial({ color: 0x3a2717, roughness: 1 })
+      );
+      trunk.position.y = 0.7 * size;
+      trunk.castShadow = true;
+      tree.add(trunk);
+
+      const leafMaterial = new THREE.MeshStandardMaterial({ color: 0x15301f, roughness: 1 });
+      for (let layer = 0; layer < 3; layer++) {
+        const leaves = new THREE.Mesh(
+          new THREE.ConeGeometry((1.4 - layer * 0.35) * size, 1.8 * size, 10),
+          leafMaterial
+        );
+        leaves.position.y = (1.7 + layer * 0.9) * size;
+        leaves.castShadow = true;
+        tree.add(leaves);
+      }
+
+      tree.position.set(x, 0, z);
+      tree.rotation.y = Math.random() * Math.PI;
+      scene.add(tree);
+    }
+
+    function createTrees() {
+      const count = 11;
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
+        const distance = 10 + Math.random() * 9;
+        createTree(Math.cos(angle) * distance, Math.sin(angle) * distance, 0.9 + Math.random() * 0.7);
+      }
+    }
+
+    function createStars() {
+      const count = 900;
+      const positions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(Math.random() * 0.92 + 0.08);
+        const radius = 180;
+        positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = radius * Math.cos(phi);
+        positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const stars = new THREE.Points(
+        geometry,
+        new THREE.PointsMaterial({ color: 0xdfe6ff, size: 2, sizeAttenuation: false, fog: false })
+      );
+      scene.add(stars);
+    }
+
+    function createCharacter() {
+      const character = new THREE.Group();
+      const skin = new THREE.MeshStandardMaterial({ color: 0xe9c8a0, roughness: 0.7, emissive: 0x2a1c12 });
+      const coat = new THREE.MeshStandardMaterial({ color: 0x7a3b3b, roughness: 0.8, emissive: 0x24100e });
+
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 24, 18), coat);
+      body.scale.set(1, 1.15, 1);
+      body.position.y = 0.5;
+      body.castShadow = true;
+
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 18), skin);
+      head.position.y = 1.17;
+      head.castShadow = true;
+
+      const doll = new THREE.Group();
+      doll.add(body, head);
+
+      const eyeMaterial = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+      for (const side of [-1, 1]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04, 10, 8), eyeMaterial);
+        eye.position.set(side * 0.1, 1.2, 0.27);
+        doll.add(eye);
+      }
+
+      character.add(doll);
+      character.userData.doll = doll;
+      character.position.set(0, 0, 5);
+      character.rotation.y = Math.PI;
+      scene.add(character);
+      return character;
+    }
+
+    function createTargetMarker() {
+      const marker = new THREE.Mesh(
+        new THREE.RingGeometry(0.25, 0.35, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0, depthWrite: false })
+      );
+      marker.rotation.x = -Math.PI / 2;
+      marker.position.y = 0.03;
+      scene.add(marker);
+      return marker;
+    }
+
+    const ground = createGround();
+    const campfire = createCampfire();
+    createTrees();
+    createStars();
+    const character = createCharacter();
+    const targetMarker = createTargetMarker();
+    let walkTarget = null;
+    let walkTime = 0;
+
+    function flickerFire(time) {
+      for (const flame of campfire.flames) {
+        const phase = flame.userData.phase;
+        const wave = Math.sin(time * 7 + phase) * 0.12 + Math.sin(time * 13 + phase * 2) * 0.06;
+        flame.scale.set(1 + wave * 0.4, 1 + wave + Math.random() * 0.05, 1 + wave * 0.4);
+        flame.rotation.y = time * 0.8 + phase;
+      }
+      const flicker = Math.sin(time * 9) * 0.5 + Math.sin(time * 23) * 0.3 + Math.random() * 0.4;
+      campfire.light.intensity = 55 + flicker * 12;
+      campfire.glow.material.opacity = 0.75 + flicker * 0.1;
+    }
+
+    function readKeys() {
+      const has = (...codes) => codes.some((code) => pressedKeys.has(code));
+      return {
+        forward: (has('KeyW', 'ArrowUp') ? 1 : 0) - (has('KeyS', 'ArrowDown') ? 1 : 0),
+        turn: (has('KeyA', 'ArrowLeft') ? 1 : 0) - (has('KeyD', 'ArrowRight') ? 1 : 0)
+      };
+    }
+
+    function pickGroundPoint(event) {
+      pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObject(ground)[0];
+      return hit ? hit.point : null;
+    }
+
+    function turnToward(targetAngle, maxStep) {
+      let difference = targetAngle - character.rotation.y;
+      difference = Math.atan2(Math.sin(difference), Math.cos(difference));
+      character.rotation.y += THREE.MathUtils.clamp(difference, -maxStep, maxStep);
+    }
+
+    function moveCharacter(delta) {
+      const keys = readKeys();
+      let moving = false;
+
+      if (keys.forward !== 0 || keys.turn !== 0) {
+        walkTarget = null;
+        character.rotation.y += keys.turn * TURN_SPEED * delta;
+        if (keys.forward !== 0) {
+          const step = keys.forward * WALK_SPEED * delta;
+          character.position.x += Math.sin(character.rotation.y) * step;
+          character.position.z += Math.cos(character.rotation.y) * step;
+          moving = true;
+        }
+      } else if (walkTarget) {
+        const dx = walkTarget.x - character.position.x;
+        const dz = walkTarget.z - character.position.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance < 0.1) {
+          walkTarget = null;
+        } else {
+          turnToward(Math.atan2(dx, dz), TURN_SPEED * 2 * delta);
+          const step = Math.min(WALK_SPEED * delta, distance);
+          character.position.x += (dx / distance) * step;
+          character.position.z += (dz / distance) * step;
+          moving = true;
+        }
+      }
+
+      const doll = character.userData.doll;
+      if (moving) {
+        walkTime += delta * 10;
+        doll.position.y = Math.abs(Math.sin(walkTime)) * 0.08;
+        doll.rotation.z = Math.sin(walkTime) * 0.06;
+      } else {
+        doll.position.y *= 0.8;
+        doll.rotation.z *= 0.8;
+      }
+
+      targetMarker.material.opacity = walkTarget ? 0.8 : Math.max(0, targetMarker.material.opacity - delta * 2);
+    }
+
+    function followCamera(delta, snap) {
+      const heading = character.rotation.y;
+      const desired = new THREE.Vector3(
+        character.position.x - Math.sin(heading) * CAMERA_DISTANCE,
+        character.position.y + CAMERA_HEIGHT,
+        character.position.z - Math.cos(heading) * CAMERA_DISTANCE
+      );
+      if (snap) {
+        camera.position.copy(desired);
+      } else {
+        camera.position.lerp(desired, 1 - Math.exp(-delta * 4));
+      }
+      camera.lookAt(character.position.x, character.position.y + 1.1, character.position.z);
+    }
+
+    function resizeView() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function hideHint() {
+      hint.classList.add('hidden');
+    }
+
+    function startWalkTo(event) {
+      const point = pickGroundPoint(event);
+      if (!point) return;
+      walkTarget = new THREE.Vector3(point.x, 0, point.z);
+      targetMarker.position.set(point.x, 0.03, point.z);
+      hideHint();
+    }
+
+    window.addEventListener('keydown', (event) => {
+      if (event.code.startsWith('Arrow')) event.preventDefault();
+      pressedKeys.add(event.code);
+      hideHint();
+    });
+    window.addEventListener('keyup', (event) => pressedKeys.delete(event.code));
+    window.addEventListener('blur', () => pressedKeys.clear());
+    window.addEventListener('resize', resizeView);
+    renderer.domElement.addEventListener('pointerdown', startWalkTo);
+
+    const clock = new THREE.Clock();
+    function renderFrame() {
+      const delta = Math.min(clock.getDelta(), 0.05);
+      const time = clock.elapsedTime;
+      moveCharacter(delta);
+      flickerFire(time);
+      followCamera(delta, false);
+      renderer.render(scene, camera);
+      requestAnimationFrame(renderFrame);
+    }
+
+    hint.textContent = 'WASD · 방향키로 걷거나, 바닥을 눌러 그곳으로 걸어가요';
+    setTimeout(hideHint, 8000);
+    followCamera(0, true);
+    renderFrame();
+  </script>
+</body>
+</html>
