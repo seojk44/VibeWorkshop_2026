@@ -46,6 +46,18 @@
       white-space: nowrap;
       pointer-events: none;
     }
+    #peopleCount {
+      position: fixed;
+      left: 50%;
+      top: 54px;
+      transform: translateX(-50%);
+      padding: 4px 12px;
+      border-radius: 999px;
+      background: rgba(10, 12, 24, 0.5);
+      font-size: 13px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
     #addLogButton {
       position: fixed;
       left: 50%;
@@ -92,6 +104,7 @@
 <body>
   <div id="hint">three.js를 불러오는 중…</div>
   <div id="logCount">오늘 넣은 장작 0개</div>
+  <div id="peopleCount">연결하는 중…</div>
   <button id="addLogButton" type="button">장작 넣기</button>
   <button id="soundButton" type="button" aria-pressed="false">소리 켜기</button>
 
@@ -116,6 +129,21 @@
     let audio = null;
     let soundOn = false;
     let crackleTimer = null;
+
+    const APP_ID = 'hoseo-vibe-campfire-seojk44';
+    const ROOM_NAME = 'lobby';
+    const TRYSTERO_URL = 'https://cdn.jsdelivr.net/npm/trystero@0.22.0/+esm';
+    const POSE_INTERVAL_MS = 200;
+    const PEER_TIMEOUT_MS = 5000;
+    const SPAWN_RADIUS = 5;
+    const SPAWN_GAP = 1.5;
+    const peopleLabel = document.getElementById('peopleCount');
+    const peers = new Map();
+    let roomState = 'connecting';
+    let joinedAt = 0;
+    let hasMoved = false;
+    let sendPoseAction = null;
+    let sendLogAction = null;
     let hintTimer = null;
     let fireBoostStart = -Infinity;
     let leanStart = -Infinity;
@@ -306,10 +334,10 @@
       scene.add(stars);
     }
 
-    function createCharacter() {
+    function createCharacter(coatColor = 0x7a3b3b) {
       const character = new THREE.Group();
       const skin = new THREE.MeshStandardMaterial({ color: 0xe9c8a0, roughness: 0.7, emissive: 0x2a1c12 });
-      const coat = new THREE.MeshStandardMaterial({ color: 0x7a3b3b, roughness: 0.8, emissive: 0x24100e });
+      const coat = new THREE.MeshStandardMaterial({ color: coatColor, roughness: 0.8, emissive: 0x24100e });
 
       const body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 24, 18), coat);
       body.scale.set(1, 1.15, 1);
@@ -332,8 +360,6 @@
 
       character.add(doll);
       character.userData.doll = doll;
-      character.position.set(0, 0, 5);
-      character.rotation.y = Math.PI;
       scene.add(character);
       return character;
     }
@@ -357,6 +383,7 @@
     const targetMarker = createTargetMarker();
     let walkTarget = null;
     let walkTime = 0;
+    placeAtSpawn(pickSpawnPoint([]));
 
     function readFireBoost(time) {
       const progress = (time - fireBoostStart) / FIRE_BOOST_SECONDS;
@@ -460,6 +487,7 @@
       const now = clock.elapsedTime;
       leanStart = now;
       fireBoostStart = now;
+      shareLog();
     }
 
     function createNoiseBuffer(context, seconds) {
@@ -605,6 +633,191 @@
       }
     }
 
+    function pickSpawnPoint(others) {
+      const offset = Math.random() * Math.PI * 2;
+      let best = null;
+      let bestGap = -1;
+      for (let i = 0; i < 24; i++) {
+        const angle = offset + (i / 24) * Math.PI * 2;
+        const x = Math.cos(angle) * SPAWN_RADIUS;
+        const z = Math.sin(angle) * SPAWN_RADIUS;
+        const gap = others.length
+          ? Math.min(...others.map((other) => Math.hypot(other.x - x, other.z - z)))
+          : Infinity;
+        if (gap > bestGap) {
+          best = { x, z };
+          bestGap = gap;
+        }
+        if (!others.length) break;
+      }
+      return best;
+    }
+
+    function placeAtSpawn(point) {
+      character.position.set(point.x, 0, point.z);
+      character.rotation.y = Math.atan2(-point.x, -point.z);
+      walkTarget = null;
+    }
+
+    function readMyAge() {
+      return (performance.now() - joinedAt) / 1000;
+    }
+
+    function readPeerPoints() {
+      const points = [];
+      for (const peer of peers.values()) {
+        if (peer.target) points.push(peer.target);
+      }
+      return points;
+    }
+
+    function readPose(data) {
+      if (!data || typeof data !== 'object') return null;
+      const { x, z, ry, age } = data;
+      if (![x, z, ry, age].every(Number.isFinite)) return null;
+      const limit = GROUND_RADIUS - 0.5;
+      const distance = Math.hypot(x, z);
+      const scale = distance > limit ? limit / distance : 1;
+      return { x: x * scale, z: z * scale, ry, age };
+    }
+
+    function pickPeerColor(peerId) {
+      let hash = 0;
+      for (const letter of String(peerId)) {
+        hash = (hash * 31 + letter.charCodeAt(0)) >>> 0;
+      }
+      const hue = 0.08 + (hash % 1000) / 1000 * 0.84;
+      return new THREE.Color().setHSL(hue, 0.55, 0.45).getHex();
+    }
+
+    function showPeopleCount() {
+      if (roomState === 'connecting') {
+        peopleLabel.textContent = '연결하는 중…';
+      } else if (roomState === 'solo') {
+        peopleLabel.textContent = '혼자 있어요';
+      } else {
+        peopleLabel.textContent = `함께 ${peers.size + 1}명`;
+      }
+    }
+
+    function addPeer(peerId) {
+      if (peers.has(peerId)) return peers.get(peerId);
+      const doll = createCharacter(pickPeerColor(peerId));
+      doll.visible = false;
+      const peer = { doll, target: null, lastSeen: performance.now(), leanStart: -Infinity };
+      peers.set(peerId, peer);
+      showPeopleCount();
+      return peer;
+    }
+
+    function removePeer(peerId) {
+      const peer = peers.get(peerId);
+      if (!peer) return;
+      scene.remove(peer.doll);
+      peer.doll.traverse((part) => {
+        if (part.geometry) part.geometry.dispose();
+        if (part.material) part.material.dispose();
+      });
+      peers.delete(peerId);
+      showPeopleCount();
+    }
+
+    function avoidOverlapOnJoin(pose) {
+      if (hasMoved || readMyAge() >= pose.age) return;
+      if (Math.hypot(pose.x - character.position.x, pose.z - character.position.z) >= SPAWN_GAP) return;
+      placeAtSpawn(pickSpawnPoint(readPeerPoints()));
+      followCamera(0, true);
+      shareMyPose();
+    }
+
+    function receivePose(data, peerId) {
+      const pose = readPose(data);
+      if (!pose) return;
+      const peer = addPeer(peerId);
+      const firstPose = !peer.target;
+      peer.target = pose;
+      peer.lastSeen = performance.now();
+      if (firstPose) {
+        peer.doll.position.set(pose.x, 0, pose.z);
+        peer.doll.rotation.y = pose.ry;
+        peer.doll.visible = true;
+        avoidOverlapOnJoin(pose);
+      }
+    }
+
+    function receiveLog(data, peerId) {
+      const now = clock.elapsedTime;
+      fireBoostStart = now;
+      const peer = peers.get(peerId);
+      if (peer) peer.leanStart = now;
+    }
+
+    function shareMyPose() {
+      if (!sendPoseAction) return;
+      const round = (value) => Math.round(value * 100) / 100;
+      const pose = {
+        x: round(character.position.x),
+        z: round(character.position.z),
+        ry: round(character.rotation.y),
+        age: round(readMyAge())
+      };
+      Promise.resolve(sendPoseAction(pose)).catch(() => {});
+    }
+
+    function shareLog() {
+      if (!sendLogAction) return;
+      Promise.resolve(sendLogAction({})).catch(() => {});
+    }
+
+    function updatePeers(delta, time) {
+      const now = performance.now();
+      const follow = 1 - Math.exp(-delta * 10);
+      for (const [peerId, peer] of peers) {
+        if (now - peer.lastSeen > PEER_TIMEOUT_MS) {
+          removePeer(peerId);
+          continue;
+        }
+        if (!peer.target) continue;
+        peer.doll.position.x += (peer.target.x - peer.doll.position.x) * follow;
+        peer.doll.position.z += (peer.target.z - peer.doll.position.z) * follow;
+        let turn = peer.target.ry - peer.doll.rotation.y;
+        turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+        peer.doll.rotation.y += turn * follow;
+        const leanProgress = (time - peer.leanStart) / LEAN_SECONDS;
+        peer.doll.userData.doll.rotation.x =
+          leanProgress >= 0 && leanProgress < 1 ? Math.sin(leanProgress * Math.PI) * 0.55 : 0;
+      }
+    }
+
+    async function connectRoom() {
+      try {
+        if (!window.isSecureContext || !window.crypto?.subtle) {
+          throw new Error('https나 내 컴퓨터 파일로 열지 않아 암호화 기능을 쓸 수 없어요');
+        }
+        const { joinRoom } = await import(TRYSTERO_URL);
+        const room = joinRoom({ appId: APP_ID }, ROOM_NAME);
+        const [sendPose, getPose] = room.makeAction('pose');
+        const [sendLog, getLog] = room.makeAction('log');
+        getPose(receivePose);
+        getLog(receiveLog);
+        room.onPeerJoin((peerId) => {
+          addPeer(peerId);
+          shareMyPose();
+        });
+        room.onPeerLeave(removePeer);
+        sendPoseAction = sendPose;
+        sendLogAction = sendLog;
+        joinedAt = performance.now();
+        roomState = 'online';
+        setInterval(shareMyPose, POSE_INTERVAL_MS);
+        window.addEventListener('pagehide', () => room.leave());
+      } catch (error) {
+        roomState = 'solo';
+        console.warn('함께 보기 연결을 못 해 혼자 모드로 둡니다.', error);
+      }
+      showPeopleCount();
+    }
+
     function readKeys() {
       const has = (...codes) => codes.some((code) => pressedKeys.has(code));
       return {
@@ -656,6 +869,7 @@
       }
 
       const doll = character.userData.doll;
+      if (moving) hasMoved = true;
       if (moving) {
         walkTime += delta * 10;
         doll.position.y = Math.abs(Math.sin(walkTime)) * 0.08;
@@ -720,6 +934,7 @@
       const delta = Math.min(clock.getDelta(), 0.05);
       const time = clock.elapsedTime;
       moveCharacter(delta, time);
+      updatePeers(delta, time);
       updateLogButton();
       flickerFire(time);
       followCamera(delta, false);
@@ -734,6 +949,7 @@
     showLogCount(logCount);
     followCamera(0, true);
     renderFrame();
+    connectRoom();
   </script>
 </body>
 </html>
