@@ -133,6 +133,32 @@
     color: #dc2626;
   }
 
+  /* 목차 */
+  .toc {
+    margin-top: 24px;
+    padding: 16px 20px;
+    background: #fff;
+    border: 1px solid #e3e5e8;
+    border-radius: 12px;
+  }
+  .toc h2 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    color: #666;
+  }
+  .toc ul {
+    margin: 0;
+    padding-left: 20px;
+  }
+  .toc a {
+    color: #03c75a;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .toc a:hover {
+    text-decoration: underline;
+  }
+
   @media (max-width: 480px) {
     .top { padding-top: 32px; }
     h1 { font-size: 32px; }
@@ -164,6 +190,12 @@
   <div class="content">
     <div class="inner">
       <div id="result" class="result"></div>
+      <nav class="toc" aria-label="목차">
+        <h2>목차</h2>
+        <ul>
+          <li><a href="vibe_w1/space/index.html">온라인 모닥불</a></li>
+        </ul>
+      </nav>
     </div>
   </div>
 
