@@ -20,7 +20,7 @@
     #hint {
       position: fixed;
       left: 50%;
-      bottom: 92px;
+      bottom: 140px;
       transform: translateX(-50%);
       max-width: calc(100% - 32px);
       padding: 8px 14px;
@@ -61,7 +61,7 @@
     #addLogButton {
       position: fixed;
       left: 50%;
-      bottom: max(24px, env(safe-area-inset-bottom));
+      bottom: max(72px, calc(env(safe-area-inset-bottom) + 60px));
       transform: translateX(-50%);
       min-width: 160px;
       min-height: 48px;
@@ -82,7 +82,9 @@
       opacity: 0.45;
       background: rgba(60, 40, 30, 0.85);
     }
-    #soundButton {
+    #soundButton,
+    #chatToggle,
+    #chatSendButton {
       position: fixed;
       top: 12px;
       right: 12px;
@@ -99,6 +101,64 @@
     #soundButton[aria-pressed="true"] {
       background: rgba(120, 52, 18, 0.85);
     }
+    #chatToggle {
+      top: 60px;
+    }
+    #chatForm {
+      position: fixed;
+      left: 50%;
+      bottom: max(12px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      width: min(520px, calc(100% - 32px));
+      display: flex;
+      gap: 8px;
+    }
+    #chatForm[hidden] {
+      display: none;
+    }
+    #chatInput {
+      flex: 1;
+      min-width: 0;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 1px solid rgba(255, 190, 120, 0.45);
+      border-radius: 999px;
+      background: rgba(10, 12, 24, 0.75);
+      color: #fff1dc;
+      font: inherit;
+      font-size: 16px;
+    }
+    #chatInput::placeholder {
+      color: rgba(233, 220, 198, 0.6);
+    }
+    #chatSendButton {
+      position: static;
+      min-height: 44px;
+    }
+    #chatInput:disabled,
+    #chatSendButton:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    #bubbleLayer {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    .chatBubble {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      max-width: min(240px, 70vw);
+      padding: 6px 10px;
+      border-radius: 12px;
+      background: rgba(255, 246, 230, 0.92);
+      color: #2a1a10;
+      font-size: 14px;
+      line-height: 1.35;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
   </style>
 </head>
 <body>
@@ -107,6 +167,12 @@
   <div id="peopleCount">연결하는 중…</div>
   <button id="addLogButton" type="button">장작 넣기</button>
   <button id="soundButton" type="button" aria-pressed="false">소리 켜기</button>
+  <button id="chatToggle" type="button">채팅 끄기</button>
+  <div id="bubbleLayer"></div>
+  <form id="chatForm" autocomplete="off">
+    <input id="chatInput" type="text" maxlength="60" aria-label="채팅 입력" placeholder="짧은 말 (개인정보는 쓰지 마세요)" disabled>
+    <button id="chatSendButton" type="submit" disabled>보내기</button>
+  </form>
 
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
@@ -144,6 +210,20 @@
     let hasMoved = false;
     let sendPoseAction = null;
     let sendLogAction = null;
+
+    const CHAT_MAX_LENGTH = 60;
+    const CHAT_BUBBLE_MS = 6000;
+    const CHAT_SEND_GAP_MS = 1500;
+    const CHAT_RECEIVE_GAP_MS = 1000;
+    const chatForm = document.getElementById('chatForm');
+    const chatInput = document.getElementById('chatInput');
+    const chatSendButton = document.getElementById('chatSendButton');
+    const chatToggle = document.getElementById('chatToggle');
+    const bubbleLayer = document.getElementById('bubbleLayer');
+    const chatBubbles = new Map();
+    let chatOn = true;
+    let lastChatSentAt = -Infinity;
+    let sendChatAction = null;
     let hintTimer = null;
     let fireBoostStart = -Infinity;
     let leanStart = -Infinity;
@@ -698,13 +778,14 @@
       } else {
         peopleLabel.textContent = `함께 ${peers.size + 1}명`;
       }
+      updateChatInput();
     }
 
     function addPeer(peerId) {
       if (peers.has(peerId)) return peers.get(peerId);
       const doll = createCharacter(pickPeerColor(peerId));
       doll.visible = false;
-      const peer = { doll, target: null, lastSeen: performance.now(), leanStart: -Infinity };
+      const peer = { doll, target: null, lastSeen: performance.now(), leanStart: -Infinity, lastChatAt: -Infinity };
       peers.set(peerId, peer);
       showPeopleCount();
       return peer;
@@ -713,6 +794,7 @@
     function removePeer(peerId) {
       const peer = peers.get(peerId);
       if (!peer) return;
+      removeChatBubble(peer.doll);
       scene.remove(peer.doll);
       peer.doll.traverse((part) => {
         if (part.geometry) part.geometry.dispose();
@@ -720,6 +802,102 @@
       });
       peers.delete(peerId);
       showPeopleCount();
+    }
+
+    function cleanChatText(value) {
+      if (typeof value !== 'string') return '';
+      const flat = value
+        .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return Array.from(flat).slice(0, CHAT_MAX_LENGTH).join('');
+    }
+
+    function updateChatInput() {
+      const usable = roomState === 'online';
+      chatInput.disabled = !usable;
+      chatSendButton.disabled = !usable;
+      chatInput.placeholder = usable
+        ? '짧은 말 (개인정보는 쓰지 마세요)'
+        : '혼자 있을 때는 보낼 수 없어요 (개인정보는 쓰지 마세요)';
+    }
+
+    function removeChatBubble(owner) {
+      const bubble = chatBubbles.get(owner);
+      if (!bubble) return;
+      clearTimeout(bubble.timer);
+      bubble.element.remove();
+      chatBubbles.delete(owner);
+    }
+
+    function showChatBubble(owner, text) {
+      let bubble = chatBubbles.get(owner);
+      if (!bubble) {
+        const element = document.createElement('div');
+        element.className = 'chatBubble';
+        bubbleLayer.appendChild(element);
+        bubble = { element, timer: null };
+        chatBubbles.set(owner, bubble);
+      }
+      bubble.element.textContent = text;
+      clearTimeout(bubble.timer);
+      bubble.timer = setTimeout(() => removeChatBubble(owner), CHAT_BUBBLE_MS);
+      placeChatBubbles();
+    }
+
+    const bubblePoint = new THREE.Vector3();
+    function placeChatBubbles() {
+      for (const [owner, bubble] of chatBubbles) {
+        owner.getWorldPosition(bubblePoint);
+        bubblePoint.y += 1.75;
+        bubblePoint.project(camera);
+        const onScreen = owner.visible && bubblePoint.z < 1 && Math.abs(bubblePoint.x) < 1.2 && Math.abs(bubblePoint.y) < 1.2;
+        bubble.element.style.display = onScreen ? 'block' : 'none';
+        bubble.element.style.left = `${(bubblePoint.x * 0.5 + 0.5) * window.innerWidth}px`;
+        bubble.element.style.top = `${(-bubblePoint.y * 0.5 + 0.5) * window.innerHeight}px`;
+      }
+    }
+
+    function sendChat(event) {
+      event.preventDefault();
+      if (roomState !== 'online' || !chatOn) return;
+      const now = performance.now();
+      if (now - lastChatSentAt < CHAT_SEND_GAP_MS) {
+        showHint('조금 있다가 다시 보내 주세요');
+        return;
+      }
+      const text = cleanChatText(chatInput.value);
+      chatInput.value = '';
+      if (!text) return;
+      lastChatSentAt = now;
+      showChatBubble(character, text);
+      if (sendChatAction) Promise.resolve(sendChatAction({ text })).catch(() => {});
+    }
+
+    function receiveChat(data, peerId) {
+      if (!chatOn) return;
+      const peer = peers.get(peerId);
+      if (!peer || !peer.target) return;
+      const now = performance.now();
+      if (now - peer.lastChatAt < CHAT_RECEIVE_GAP_MS) return;
+      const text = cleanChatText(data && data.text);
+      if (!text) return;
+      peer.lastChatAt = now;
+      showChatBubble(peer.doll, text);
+    }
+
+    function toggleChat() {
+      chatOn = !chatOn;
+      chatToggle.textContent = chatOn ? '채팅 끄기' : '채팅 켜기';
+      chatForm.hidden = !chatOn;
+      if (!chatOn) {
+        chatInput.blur();
+        for (const owner of [...chatBubbles.keys()]) removeChatBubble(owner);
+      }
+    }
+
+    function checkTypingTarget(target) {
+      return target instanceof HTMLElement && Boolean(target.closest('input, textarea'));
     }
 
     function avoidOverlapOnJoin(pose) {
@@ -800,6 +978,9 @@
         const [sendLog, getLog] = room.makeAction('log');
         getPose(receivePose);
         getLog(receiveLog);
+        const [sendChatMessage, getChat] = room.makeAction('chat');
+        getChat(receiveChat);
+        sendChatAction = sendChatMessage;
         room.onPeerJoin((peerId) => {
           addPeer(peerId);
           shareMyPose();
@@ -917,6 +1098,10 @@
     }
 
     window.addEventListener('keydown', (event) => {
+      if (checkTypingTarget(event.target)) {
+        if (event.key === 'Escape') event.target.blur();
+        return;
+      }
       if (event.code.startsWith('Arrow')) event.preventDefault();
       pressedKeys.add(event.code);
       hideHint();
@@ -927,6 +1112,9 @@
     renderer.domElement.addEventListener('pointerdown', startWalkTo);
     addLogButton.addEventListener('click', addLog);
     soundButton.addEventListener('click', toggleSound);
+    chatForm.addEventListener('submit', sendChat);
+    chatToggle.addEventListener('click', toggleChat);
+    chatInput.addEventListener('focus', () => pressedKeys.clear());
     document.addEventListener('visibilitychange', resumeSoundAfterReturn);
 
     const clock = new THREE.Clock();
@@ -938,6 +1126,7 @@
       updateLogButton();
       flickerFire(time);
       followCamera(delta, false);
+      placeChatBubbles();
       renderer.render(scene, camera);
       requestAnimationFrame(renderFrame);
     }
