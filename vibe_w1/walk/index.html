@@ -259,16 +259,16 @@
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
 
-    const skyLight = new THREE.HemisphereLight(0x3a4a7a, 0x0b0f08, 0.35);
+    const skyLight = new THREE.HemisphereLight(0xb8c8e8, 0x3a3020, 0.35);
     scene.add(skyLight);
-    const moonLight = new THREE.DirectionalLight(0x8fa6d8, 0.25);
-    moonLight.position.set(-20, 30, -10);
-    scene.add(moonLight);
+    const sunLight = new THREE.DirectionalLight(0x8fa6d8, 0.25);
+    sunLight.position.set(-20, 30, -10);
+    scene.add(sunLight);
 
     function createWalkGround() {
       const ground = new THREE.Mesh(
         new THREE.PlaneGeometry(GROUND_HALF_WIDTH * 2, GROUND_HALF_LENGTH * 2),
-        new THREE.MeshStandardMaterial({ color: 0x1b261a, roughness: 1 })
+        new THREE.MeshStandardMaterial({ color: 0x5d8a46, roughness: 1 })
       );
       ground.rotation.x = -Math.PI / 2;
       ground.receiveShadow = true;
@@ -276,7 +276,7 @@
 
       const path = new THREE.Mesh(
         new THREE.PlaneGeometry(PATH_WIDTH, GROUND_HALF_LENGTH * 2),
-        new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 1 })
+        new THREE.MeshStandardMaterial({ color: 0x9c7a55, roughness: 1 })
       );
       path.rotation.x = -Math.PI / 2;
       path.position.y = 0.01;
@@ -373,9 +373,9 @@
 
     const treeParts = {
       trunkGeometry: new THREE.CylinderGeometry(0.18, 0.25, 1.4, 8),
-      trunkMaterial: new THREE.MeshStandardMaterial({ color: 0x3a2717, roughness: 1 }),
+      trunkMaterial: new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 1 }),
       leafGeometries: [0, 1, 2].map((layer) => new THREE.ConeGeometry(1.4 - layer * 0.35, 1.8, 10)),
-      leafMaterial: new THREE.MeshStandardMaterial({ color: 0x15301f, roughness: 1 })
+      leafMaterial: new THREE.MeshStandardMaterial({ color: 0x2f6b3a, roughness: 1 })
     };
     const trees = [];
 
@@ -504,15 +504,20 @@
     const stars = createStars();
 
     const TIME_SETTINGS = {
-      evening: { sky: 0x2a2350, ambient: 0.6, moon: 0.35, stars: 0.4, fireBase: 40 },
-      night: { sky: 0x070b1a, ambient: 0.35, moon: 0.25, stars: 1, fireBase: 55 },
-      dawn: { sky: 0x33405e, ambient: 0.7, moon: 0.2, stars: 0.2, fireBase: 30 }
+      dawn: { sky: 0x5a6a8a, sun: 0.5, sunColor: 0x9fb4e0, sunPosition: [30, 8, -20], ambient: 0.7, stars: 0.3, fog: 0.03 },
+      morning: { sky: 0xbcd3e6, sun: 1.2, sunColor: 0xffd8a8, sunPosition: [35, 14, -15], ambient: 0.9, stars: 0, fog: 0.02 },
+      day: { sky: 0x8fc4ea, sun: 1.6, sunColor: 0xffffff, sunPosition: [10, 40, 10], ambient: 1.1, stars: 0, fog: 0.015 },
+      evening: { sky: 0x6a4a6e, sun: 0.8, sunColor: 0xffa060, sunPosition: [-35, 10, 15], ambient: 0.7, stars: 0.2, fog: 0.025 },
+      night: { sky: 0x0d1428, sun: 0.6, sunColor: 0x8fa6d8, sunPosition: [-20, 30, -10], ambient: 0.6, stars: 1, fog: 0.035 }
     };
     const TIME_CHECK_MS = 60000;
+    const FIRE_LIGHT_BASE = 55;
 
     function pickTimeOfDay(hour) {
-      if (hour >= 4 && hour < 7) return 'dawn';
-      if (hour >= 7 && hour < 20) return 'evening';
+      if (hour >= 4 && hour < 6) return 'dawn';
+      if (hour >= 6 && hour < 10) return 'morning';
+      if (hour >= 10 && hour < 17) return 'day';
+      if (hour >= 17 && hour < 20) return 'evening';
       return 'night';
     }
 
@@ -528,33 +533,45 @@
     }
 
     let timeTarget = TIME_SETTINGS[readCurrentTimeOfDay()];
-    const timeTargetColor = new THREE.Color(timeTarget.sky);
+    const timeTargetSky = new THREE.Color(timeTarget.sky);
+    const timeTargetSunColor = new THREE.Color(timeTarget.sunColor);
+    const timeTargetSunPosition = new THREE.Vector3(...timeTarget.sunPosition);
     const timeLook = {
       sky: new THREE.Color(timeTarget.sky),
+      sun: timeTarget.sun,
+      sunColor: new THREE.Color(timeTarget.sunColor),
+      sunPosition: new THREE.Vector3(...timeTarget.sunPosition),
       ambient: timeTarget.ambient,
-      moon: timeTarget.moon,
       stars: timeTarget.stars,
-      fireBase: timeTarget.fireBase
+      fog: timeTarget.fog
     };
 
     function updateTimeOfDay() {
       if (timeOverride) return;
       timeTarget = TIME_SETTINGS[readCurrentTimeOfDay()];
-      timeTargetColor.set(timeTarget.sky);
+      timeTargetSky.set(timeTarget.sky);
+      timeTargetSunColor.set(timeTarget.sunColor);
+      timeTargetSunPosition.set(...timeTarget.sunPosition);
     }
 
     function applyTimeOfDay(delta) {
       const follow = 1 - Math.exp(-delta * 0.8);
-      timeLook.sky.lerp(timeTargetColor, follow);
+      timeLook.sky.lerp(timeTargetSky, follow);
+      timeLook.sunColor.lerp(timeTargetSunColor, follow);
+      timeLook.sunPosition.lerp(timeTargetSunPosition, follow);
+      timeLook.sun += (timeTarget.sun - timeLook.sun) * follow;
       timeLook.ambient += (timeTarget.ambient - timeLook.ambient) * follow;
-      timeLook.moon += (timeTarget.moon - timeLook.moon) * follow;
       timeLook.stars += (timeTarget.stars - timeLook.stars) * follow;
-      timeLook.fireBase += (timeTarget.fireBase - timeLook.fireBase) * follow;
+      timeLook.fog += (timeTarget.fog - timeLook.fog) * follow;
       scene.background.copy(timeLook.sky);
       scene.fog.color.copy(timeLook.sky);
+      scene.fog.density = timeLook.fog;
       skyLight.intensity = timeLook.ambient;
-      moonLight.intensity = timeLook.moon;
+      sunLight.intensity = timeLook.sun;
+      sunLight.color.copy(timeLook.sunColor);
+      sunLight.position.copy(timeLook.sunPosition);
       stars.material.opacity = timeLook.stars;
+      stars.visible = timeLook.stars > 0.01;
     }
     const character = createCharacter();
     const targetMarker = createTargetMarker();
@@ -585,7 +602,7 @@
         flame.rotation.y = time * 0.8 + phase;
       }
       const flicker = Math.sin(time * 9) * 0.5 + Math.sin(time * 23) * 0.3 + Math.random() * 0.4;
-      campfire.light.intensity = timeLook.fireBase + flicker * 12 + boost * 70;
+      campfire.light.intensity = FIRE_LIGHT_BASE + flicker * 12 + boost * 70;
       campfire.glow.material.opacity = 0.75 + flicker * 0.1;
       campfire.glow.scale.setScalar(1 + boost * 0.5);
     }
