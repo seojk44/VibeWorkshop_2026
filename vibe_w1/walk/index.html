@@ -34,7 +34,7 @@
     #hint.hidden {
       opacity: 0;
     }
-    #logCount {
+    #treeCount {
       position: fixed;
       left: 50%;
       top: 16px;
@@ -58,7 +58,7 @@
       white-space: nowrap;
       pointer-events: none;
     }
-    #addLogButton {
+    #viewTreeButton {
       position: fixed;
       left: 50%;
       bottom: max(72px, calc(env(safe-area-inset-bottom) + 60px));
@@ -75,10 +75,10 @@
       cursor: pointer;
       transition: opacity 0.3s, background 0.3s;
     }
-    #addLogButton:active {
+    #viewTreeButton:active {
       transform: translateX(-50%) scale(0.96);
     }
-    #addLogButton.far {
+    #viewTreeButton.far {
       opacity: 0.45;
       background: rgba(60, 40, 30, 0.85);
     }
@@ -163,9 +163,9 @@
 </head>
 <body>
   <div id="hint">three.js를 불러오는 중…</div>
-  <div id="logCount">오늘 넣은 장작 0개</div>
+  <div id="treeCount">오늘 본 나무 0그루</div>
   <div id="peopleCount">연결하는 중…</div>
-  <button id="addLogButton" type="button">장작 넣기</button>
+  <button id="viewTreeButton" type="button">나무 보기</button>
   <button id="soundButton" type="button" aria-pressed="false">소리 켜기</button>
   <button id="chatToggle" type="button">채팅 끄기</button>
   <div id="bubbleLayer"></div>
@@ -184,14 +184,15 @@
     const TURN_SPEED = 2.6;
     const CAMERA_DISTANCE = 7;
     const CAMERA_HEIGHT = 3.6;
-    const FIRE_REACH = 3;
-    const FIRE_BOOST_SECONDS = 3;
-    const LEAN_SECONDS = 0.7;
-    const LOG_STORAGE_KEY = 'online-walk-tree-count';
+    const TREE_REACH = 1.5;
+    const VIEW_SECONDS = 3;
+    const TREE_SEED = 20261110;
+    const TREE_RECEIVE_GAP_MS = 1000;
+    const TREE_STORAGE_KEY = 'online-walk-tree-count';
 
     const hint = document.getElementById('hint');
-    const logCountLabel = document.getElementById('logCount');
-    const addLogButton = document.getElementById('addLogButton');
+    const treeCountLabel = document.getElementById('treeCount');
+    const viewTreeButton = document.getElementById('viewTreeButton');
     const soundButton = document.getElementById('soundButton');
     const SOUND_VOLUME = 0.8;
     let audio = null;
@@ -213,14 +214,13 @@
     const SPAWN_GAP = 1.5;
     const WALK_HALF_WIDTH = 5;
     const BODY_RADIUS = 0.4;
-    const FIRE_BLOCK_RADIUS = 1.3;
     const peopleLabel = document.getElementById('peopleCount');
     const peers = new Map();
     let roomState = 'connecting';
     let joinedAt = 0;
     let hasMoved = false;
     let sendPoseAction = null;
-    let sendLogAction = null;
+    let sendTreeAction = null;
 
     const CHAT_MAX_LENGTH = 60;
     const CHAT_BUBBLE_MS = 6000;
@@ -236,10 +236,10 @@
     let lastChatSentAt = -Infinity;
     let sendChatAction = null;
     let hintTimer = null;
-    let fireBoostStart = -Infinity;
-    let leanStart = -Infinity;
-    let logDate = '';
-    let logCount = 0;
+    let soundBoostStart = -Infinity;
+    let myView = null;
+    let treeDate = '';
+    let treeCount = 0;
     const pressedKeys = new Set();
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -286,91 +286,6 @@
       return ground;
     }
 
-    function createGlowTexture() {
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = 128;
-      const context = canvas.getContext('2d');
-      const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
-      gradient.addColorStop(0, 'rgba(255, 170, 80, 0.9)');
-      gradient.addColorStop(0.4, 'rgba(255, 110, 40, 0.35)');
-      gradient.addColorStop(1, 'rgba(255, 80, 20, 0)');
-      context.fillStyle = gradient;
-      context.fillRect(0, 0, 128, 128);
-      return new THREE.CanvasTexture(canvas);
-    }
-
-    function createCampfire() {
-      const fire = new THREE.Group();
-
-      const stoneMaterial = new THREE.MeshStandardMaterial({ color: 0x5b5752, roughness: 0.9 });
-      for (let i = 0; i < 11; i++) {
-        const angle = (i / 11) * Math.PI * 2;
-        const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.22 + Math.random() * 0.08), stoneMaterial);
-        stone.position.set(Math.cos(angle) * 1.05, 0.12, Math.sin(angle) * 1.05);
-        stone.rotation.set(Math.random(), Math.random(), Math.random());
-        stone.castShadow = true;
-        fire.add(stone);
-      }
-
-      const logMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2f1b, roughness: 0.95 });
-      for (let i = 0; i < 4; i++) {
-        const log = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 1.5, 10), logMaterial);
-        log.rotation.z = Math.PI / 2 - 0.35;
-        log.rotation.y = (i / 4) * Math.PI;
-        log.position.y = 0.3;
-        fire.add(log);
-      }
-
-      const flames = [];
-      const flameSettings = [
-        { color: 0xff5a1f, radius: 0.5, height: 1.5, x: 0, z: 0 },
-        { color: 0xff8a2a, radius: 0.35, height: 1.2, x: 0.2, z: 0.1 },
-        { color: 0xff8a2a, radius: 0.32, height: 1.1, x: -0.18, z: -0.12 },
-        { color: 0xffd36b, radius: 0.24, height: 0.9, x: 0, z: 0 }
-      ];
-      for (const setting of flameSettings) {
-        const flame = new THREE.Mesh(
-          new THREE.ConeGeometry(setting.radius, setting.height, 16, 1, true),
-          new THREE.MeshBasicMaterial({
-            color: setting.color,
-            transparent: true,
-            opacity: 0.8,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            side: THREE.DoubleSide
-          })
-        );
-        flame.geometry.translate(0, setting.height / 2, 0);
-        flame.position.set(setting.x, 0.25, setting.z);
-        flame.userData.phase = Math.random() * Math.PI * 2;
-        fire.add(flame);
-        flames.push(flame);
-      }
-
-      const glow = new THREE.Mesh(
-        new THREE.PlaneGeometry(9, 9),
-        new THREE.MeshBasicMaterial({
-          map: createGlowTexture(),
-          transparent: true,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false
-        })
-      );
-      glow.rotation.x = -Math.PI / 2;
-      glow.position.y = 0.02;
-      fire.add(glow);
-
-      const light = new THREE.PointLight(0xff8a3d, 60, 30, 2);
-      light.position.y = 1.1;
-      light.castShadow = true;
-      light.shadow.mapSize.set(512, 512);
-      light.shadow.bias = -0.003;
-      fire.add(light);
-
-      scene.add(fire);
-      return { flames, light, glow };
-    }
-
     const treeParts = {
       trunkGeometry: new THREE.CylinderGeometry(0.18, 0.25, 1.4, 8),
       trunkMaterial: new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 1 }),
@@ -379,7 +294,18 @@
     };
     const trees = [];
 
-    function createTree(x, z, size, castShadow) {
+    function createSeededRandom(seed) {
+      let state = seed >>> 0;
+      return () => {
+        state = (state + 0x6d2b79f5) >>> 0;
+        let value = state;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function createTree(x, z, size, castShadow, random) {
       const tree = new THREE.Group();
       const trunk = new THREE.Mesh(treeParts.trunkGeometry, treeParts.trunkMaterial);
       trunk.position.y = 0.7;
@@ -398,35 +324,46 @@
 
       tree.scale.setScalar(size);
       tree.position.set(x, 0, z);
-      tree.rotation.y = Math.random() * Math.PI;
+      tree.rotation.y = random() * Math.PI;
       scene.add(tree);
       trees.push({
+        index: trees.length,
         tree,
         leaves,
         trunkRadius: 0.25 * size,
-        phase: Math.random() * Math.PI * 2,
-        sway: 0.03 + Math.random() * 0.02
+        topHeight: 4.4 * size,
+        phase: random() * Math.PI * 2,
+        sway: 0.03 + random() * 0.02,
+        shakeStart: -Infinity
       });
     }
 
     function createTreeRows() {
+      const random = createSeededRandom(TREE_SEED);
       const pathEdge = PATH_WIDTH / 2;
       for (let z = -GROUND_HALF_LENGTH + 4; z <= GROUND_HALF_LENGTH - 4; z += 6) {
         for (const side of [-1, 1]) {
-          const nearX = side * (pathEdge + 1 + Math.random() * 1.4);
-          createTree(nearX, z + (Math.random() - 0.5) * 2, 0.9 + Math.random() * 0.5, true);
-          if (Math.random() < 0.6) {
-            const farX = side * (6 + Math.random() * 8);
-            createTree(farX, z + (Math.random() - 0.5) * 4, 1 + Math.random() * 0.7, false);
+          const nearX = side * (pathEdge + 1 + random() * 1.4);
+          createTree(nearX, z + (random() - 0.5) * 2, 0.9 + random() * 0.5, true, random);
+          if (random() < 0.6) {
+            const farX = side * (6 + random() * 8);
+            createTree(farX, z + (random() - 0.5) * 4, 1 + random() * 0.7, false, random);
           }
         }
       }
     }
 
+    function readViewCurve(time, start) {
+      const progress = (time - start) / VIEW_SECONDS;
+      if (progress < 0 || progress >= 1) return 0;
+      return Math.sin(progress * Math.PI);
+    }
+
     function swayLeaves(time) {
       for (const item of trees) {
-        item.leaves.rotation.x = Math.sin(time * 1.1 + item.phase) * item.sway;
-        item.leaves.rotation.z = Math.sin(time * 0.8 + item.phase * 1.7) * item.sway * 0.7;
+        const amount = item.sway * (1 + readViewCurve(time, item.shakeStart) * 2);
+        item.leaves.rotation.x = Math.sin(time * 1.1 + item.phase) * amount;
+        item.leaves.rotation.z = Math.sin(time * 0.8 + item.phase * 1.7) * amount * 0.7;
       }
     }
 
@@ -493,14 +430,13 @@
     }
 
     const ground = createWalkGround();
-    const campfire = createCampfire();
     createTreeRows();
-    const walkObstacles = [
-      { x: 0, z: 0, radius: FIRE_BLOCK_RADIUS },
-      ...trees
-        .filter((item) => Math.abs(item.tree.position.x) < WALK_HALF_WIDTH + 1)
-        .map((item) => ({ x: item.tree.position.x, z: item.tree.position.z, radius: item.trunkRadius }))
-    ];
+    const reachableTrees = trees.filter((item) => Math.abs(item.tree.position.x) < WALK_HALF_WIDTH + 1);
+    const walkObstacles = reachableTrees.map((item) => ({
+      x: item.tree.position.x,
+      z: item.tree.position.z,
+      radius: item.trunkRadius
+    }));
     const stars = createStars();
 
     const TIME_SETTINGS = {
@@ -511,7 +447,6 @@
       night: { sky: 0x0d1428, sun: 0.6, sunColor: 0x8fa6d8, sunPosition: [-20, 30, -10], ambient: 0.6, stars: 1, fog: 0.035 }
     };
     const TIME_CHECK_MS = 60000;
-    const FIRE_LIGHT_BASE = 55;
 
     function pickTimeOfDay(hour) {
       if (hour >= 4 && hour < 6) return 'dawn';
@@ -579,38 +514,16 @@
     let walkTime = 0;
     placeAtSpawn(pickSpawnPoint([]));
 
-    function readFireBoost(time) {
-      const progress = (time - fireBoostStart) / FIRE_BOOST_SECONDS;
+    function readSoundBoost(time) {
+      const progress = (time - soundBoostStart) / VIEW_SECONDS;
       if (progress < 0 || progress >= 1) return 0;
       if (progress < 0.15) return Math.sin((progress / 0.15) * Math.PI / 2);
       const fall = (progress - 0.15) / 0.85;
       return 0.5 + Math.cos(fall * Math.PI) * 0.5;
     }
 
-    function flickerFire(time) {
-      const boost = readFireBoost(time);
-      const width = 1 + boost * 0.6;
-      const height = 1 + boost * 1.1;
-      for (const flame of campfire.flames) {
-        const phase = flame.userData.phase;
-        const wave = Math.sin(time * 7 + phase) * 0.12 + Math.sin(time * 13 + phase * 2) * 0.06;
-        flame.scale.set(
-          (1 + wave * 0.4) * width,
-          (1 + wave + Math.random() * 0.05) * height,
-          (1 + wave * 0.4) * width
-        );
-        flame.rotation.y = time * 0.8 + phase;
-      }
-      const flicker = Math.sin(time * 9) * 0.5 + Math.sin(time * 23) * 0.3 + Math.random() * 0.4;
-      campfire.light.intensity = FIRE_LIGHT_BASE + flicker * 12 + boost * 70;
-      campfire.glow.material.opacity = 0.75 + flicker * 0.1;
-      campfire.glow.scale.setScalar(1 + boost * 0.5);
-    }
-
-    function readLeanAmount(time) {
-      const progress = (time - leanStart) / LEAN_SECONDS;
-      if (progress < 0 || progress >= 1) return 0;
-      return Math.sin(progress * Math.PI) * 0.55;
+    function readLookUpAmount(time, start) {
+      return -readViewCurve(time, start) * 0.45;
     }
 
     function readTodayKey() {
@@ -620,9 +533,9 @@
       return `${today.getFullYear()}-${month}-${day}`;
     }
 
-    function loadLogCount() {
+    function loadTreeCount() {
       try {
-        const saved = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY));
+        const saved = JSON.parse(localStorage.getItem(TREE_STORAGE_KEY));
         if (saved && saved.date === readTodayKey() && Number.isInteger(saved.count) && saved.count >= 0) {
           return saved.count;
         }
@@ -632,16 +545,16 @@
       return 0;
     }
 
-    function saveLogCount(count) {
+    function saveTreeCount(count) {
       try {
-        localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify({ date: readTodayKey(), count }));
+        localStorage.setItem(TREE_STORAGE_KEY, JSON.stringify({ date: readTodayKey(), count }));
       } catch (error) {
         // 저장소를 못 써도 화면은 그대로 쓴다
       }
     }
 
-    function showLogCount(count) {
-      logCountLabel.textContent = `오늘 넣은 장작 ${count}개`;
+    function showTreeCount(count) {
+      treeCountLabel.textContent = `오늘 본 나무 ${count}그루`;
     }
 
     function showHint(text) {
@@ -651,37 +564,63 @@
       hintTimer = setTimeout(hideHint, 2500);
     }
 
-    function checkNearFire() {
-      return Math.hypot(character.position.x, character.position.z) <= FIRE_REACH;
+    function findNearTree(point, candidates) {
+      let nearest = null;
+      let nearestGap = Infinity;
+      for (const item of candidates) {
+        const gap = Math.hypot(point.x - item.tree.position.x, point.z - item.tree.position.z) - item.trunkRadius;
+        if (gap <= TREE_REACH && gap < nearestGap) {
+          nearest = item;
+          nearestGap = gap;
+        }
+      }
+      return nearest;
     }
 
-    function updateLogButton() {
-      const near = checkNearFire();
-      addLogButton.classList.toggle('far', !near);
-      addLogButton.setAttribute('aria-disabled', String(!near));
+    function updateTreeButton() {
+      const near = Boolean(findNearTree(character.position, reachableTrees));
+      viewTreeButton.classList.toggle('far', !near);
+      viewTreeButton.setAttribute('aria-disabled', String(!near));
     }
 
-    function addLog() {
-      addLogButton.blur();
-      if (!checkNearFire()) {
-        showHint('불 가까이 가면 넣을 수 있어요');
+    function viewTree() {
+      viewTreeButton.blur();
+      const item = findNearTree(character.position, reachableTrees);
+      if (!item) {
+        showHint('나무 가까이 가면 볼 수 있어요');
         return;
       }
       const today = readTodayKey();
-      if (logDate !== today) {
-        logDate = today;
-        logCount = 0;
+      if (treeDate !== today) {
+        treeDate = today;
+        treeCount = 0;
       }
-      logCount = Math.max(logCount, loadLogCount()) + 1;
-      saveLogCount(logCount);
-      showLogCount(logCount);
+      treeCount = Math.max(treeCount, loadTreeCount()) + 1;
+      saveTreeCount(treeCount);
+      showTreeCount(treeCount);
 
       walkTarget = null;
-      character.rotation.y = Math.atan2(-character.position.x, -character.position.z);
+      character.rotation.y = Math.atan2(
+        item.tree.position.x - character.position.x,
+        item.tree.position.z - character.position.z
+      );
       const now = clock.elapsedTime;
-      leanStart = now;
-      fireBoostStart = now;
-      shareLog();
+      myView = { item, start: now };
+      item.shakeStart = now;
+      soundBoostStart = now;
+      shareTreeView(item.index);
+    }
+
+    function readMyViewStart() {
+      return myView ? myView.start : -Infinity;
+    }
+
+    function stopMyView() {
+      myView = null;
+    }
+
+    function checkTreeIndex(value) {
+      return Number.isInteger(value) && value >= 0 && value < trees.length;
     }
 
     function createNoiseBuffer(context, seconds) {
@@ -766,7 +705,7 @@
 
     function scheduleCrackles() {
       if (!soundOn) return;
-      const boost = readFireBoost(clock.elapsedTime);
+      const boost = readSoundBoost(clock.elapsedTime);
       playCrackle(1 + boost * 1.5);
       const delay = (60 + Math.random() * 290) / (1 + boost * 3);
       crackleTimer = setTimeout(scheduleCrackles, delay);
@@ -926,7 +865,14 @@
       if (peers.has(peerId)) return peers.get(peerId);
       const doll = createCharacter(pickPeerColor(peerId));
       doll.visible = false;
-      const peer = { doll, target: null, lastSeen: performance.now(), leanStart: -Infinity, lastChatAt: -Infinity };
+      const peer = {
+        doll,
+        target: null,
+        lastSeen: performance.now(),
+        lookStart: -Infinity,
+        lastTreeAt: -Infinity,
+        lastChatAt: -Infinity
+      };
       peers.set(peerId, peer);
       showPeopleCount();
       return peer;
@@ -1064,11 +1010,17 @@
       }
     }
 
-    function receiveLog(data, peerId) {
-      const now = clock.elapsedTime;
-      fireBoostStart = now;
+    function receiveTreeView(data, peerId) {
       const peer = peers.get(peerId);
-      if (peer) peer.leanStart = now;
+      if (!peer || !peer.target) return;
+      if (!data || typeof data !== 'object' || !checkTreeIndex(data.tree)) return;
+      const nowMs = performance.now();
+      if (nowMs - peer.lastTreeAt < TREE_RECEIVE_GAP_MS) return;
+      peer.lastTreeAt = nowMs;
+      const now = clock.elapsedTime;
+      peer.lookStart = now;
+      trees[data.tree].shakeStart = now;
+      soundBoostStart = now;
     }
 
     function shareMyPose() {
@@ -1083,9 +1035,9 @@
       Promise.resolve(sendPoseAction(pose)).catch(() => {});
     }
 
-    function shareLog() {
-      if (!sendLogAction) return;
-      Promise.resolve(sendLogAction({})).catch(() => {});
+    function shareTreeView(treeIndex) {
+      if (!sendTreeAction) return;
+      Promise.resolve(sendTreeAction({ tree: treeIndex })).catch(() => {});
     }
 
     function updatePeers(delta, time) {
@@ -1102,9 +1054,7 @@
         let turn = peer.target.ry - peer.doll.rotation.y;
         turn = Math.atan2(Math.sin(turn), Math.cos(turn));
         peer.doll.rotation.y += turn * follow;
-        const leanProgress = (time - peer.leanStart) / LEAN_SECONDS;
-        peer.doll.userData.doll.rotation.x =
-          leanProgress >= 0 && leanProgress < 1 ? Math.sin(leanProgress * Math.PI) * 0.55 : 0;
+        peer.doll.userData.doll.rotation.x = readLookUpAmount(time, peer.lookStart);
       }
     }
 
@@ -1114,10 +1064,10 @@
         if (room === currentRoom) handler(...args);
       };
       const [sendPose, getPose] = room.makeAction('pose');
-      const [sendLog, getLog] = room.makeAction('log');
+      const [sendTree, getTree] = room.makeAction('tree');
       const [sendChatMessage, getChat] = room.makeAction('chat');
       getPose(fromThisRoom(receivePose));
-      getLog(fromThisRoom(receiveLog));
+      getTree(fromThisRoom(receiveTreeView));
       getChat(fromThisRoom(receiveChat));
       room.onPeerJoin(fromThisRoom((peerId) => {
         addPeer(peerId);
@@ -1128,7 +1078,7 @@
       currentRoom = room;
       roomName = name;
       sendPoseAction = sendPose;
-      sendLogAction = sendLog;
+      sendTreeAction = sendTree;
       sendChatAction = sendChatMessage;
       joinedAt = performance.now();
       roomState = 'online';
@@ -1156,7 +1106,7 @@
       const oldRoom = currentRoom;
       currentRoom = null;
       sendPoseAction = null;
-      sendLogAction = null;
+      sendTreeAction = null;
       sendChatAction = null;
       try {
         oldRoom.leave();
@@ -1245,6 +1195,8 @@
 
       const doll = character.userData.doll;
       if (moving) hasMoved = true;
+      if (moving) stopMyView();
+      if (myView && time - myView.start >= VIEW_SECONDS) stopMyView();
       if (moving) {
         walkTime += delta * 10;
         doll.position.y = Math.abs(Math.sin(walkTime)) * 0.08;
@@ -1253,11 +1205,12 @@
         doll.position.y *= 0.8;
         doll.rotation.z *= 0.8;
       }
-      doll.rotation.x = readLeanAmount(time);
+      doll.rotation.x = readLookUpAmount(time, readMyViewStart());
 
       targetMarker.material.opacity = walkTarget ? 0.8 : Math.max(0, targetMarker.material.opacity - delta * 2);
     }
 
+    const cameraLookPoint = new THREE.Vector3();
     function followCamera(delta, snap) {
       const heading = character.rotation.y;
       const desired = new THREE.Vector3(
@@ -1265,12 +1218,30 @@
         character.position.y + CAMERA_HEIGHT,
         character.position.z - Math.cos(heading) * CAMERA_DISTANCE
       );
+      const lookTarget = new THREE.Vector3(character.position.x, character.position.y + 1.1, character.position.z);
+
+      const blend = myView ? readViewCurve(clock.elapsedTime, myView.start) : 0;
+      if (blend > 0) {
+        const treePosition = myView.item.tree.position;
+        const viewPosition = new THREE.Vector3(
+          character.position.x - Math.sin(heading) * 2,
+          myView.item.topHeight * 1.1,
+          character.position.z - Math.cos(heading) * 2
+        );
+        const treeTop = new THREE.Vector3(treePosition.x, myView.item.topHeight, treePosition.z);
+        desired.lerp(viewPosition, blend);
+        lookTarget.lerp(treeTop, blend);
+      }
+
       if (snap) {
         camera.position.copy(desired);
+        cameraLookPoint.copy(lookTarget);
       } else {
-        camera.position.lerp(desired, 1 - Math.exp(-delta * 4));
+        const follow = 1 - Math.exp(-delta * 4);
+        camera.position.lerp(desired, follow);
+        cameraLookPoint.lerp(lookTarget, follow);
       }
-      camera.lookAt(character.position.x, character.position.y + 1.1, character.position.z);
+      camera.lookAt(cameraLookPoint);
     }
 
     function resizeView() {
@@ -1305,7 +1276,7 @@
     window.addEventListener('blur', () => pressedKeys.clear());
     window.addEventListener('resize', resizeView);
     renderer.domElement.addEventListener('pointerdown', startWalkTo);
-    addLogButton.addEventListener('click', addLog);
+    viewTreeButton.addEventListener('click', viewTree);
     soundButton.addEventListener('click', toggleSound);
     chatForm.addEventListener('submit', sendChat);
     chatToggle.addEventListener('click', toggleChat);
@@ -1318,10 +1289,9 @@
       const time = clock.elapsedTime;
       moveCharacter(delta, time);
       updatePeers(delta, time);
-      updateLogButton();
+      updateTreeButton();
       applyTimeOfDay(delta);
       swayLeaves(time);
-      flickerFire(time);
       followCamera(delta, false);
       placeChatBubbles();
       renderer.render(scene, camera);
@@ -1330,9 +1300,9 @@
 
     hint.textContent = 'WASD · 방향키로 걷거나, 바닥을 눌러 그곳으로 걸어가요';
     hintTimer = setTimeout(hideHint, 8000);
-    logDate = readTodayKey();
-    logCount = loadLogCount();
-    showLogCount(logCount);
+    treeDate = readTodayKey();
+    treeCount = loadTreeCount();
+    showTreeCount(treeCount);
     followCamera(0, true);
     setInterval(updateTimeOfDay, TIME_CHECK_MS);
     renderFrame();
