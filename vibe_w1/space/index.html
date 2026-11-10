@@ -197,7 +197,13 @@
     let crackleTimer = null;
 
     const APP_ID = 'hoseo-vibe-campfire-seojk44';
-    const ROOM_NAME = 'lobby';
+    const ROOM_NAMES = ['lobby', 'lobby-2'];
+    const ROOM_LIMIT = 8;
+    const ROOM_SETTLE_MS = 5000;
+    let joinRoomFunction = null;
+    let currentRoom = null;
+    let roomName = ROOM_NAMES[0];
+    let roomCheckTimer = null;
     const TRYSTERO_URL = 'https://cdn.jsdelivr.net/npm/trystero@0.22.0/+esm';
     const POSE_INTERVAL_MS = 200;
     const PEER_TIMEOUT_MS = 5000;
@@ -776,7 +782,7 @@
       } else if (roomState === 'solo') {
         peopleLabel.textContent = '혼자 있어요';
       } else {
-        peopleLabel.textContent = `함께 ${peers.size + 1}명`;
+        peopleLabel.textContent = `${roomName} · 함께 ${peers.size + 1}명`;
       }
       updateChatInput();
     }
@@ -967,31 +973,78 @@
       }
     }
 
+    function joinRoomByName(name) {
+      const room = joinRoomFunction({ appId: APP_ID }, name);
+      const fromThisRoom = (handler) => (...args) => {
+        if (room === currentRoom) handler(...args);
+      };
+      const [sendPose, getPose] = room.makeAction('pose');
+      const [sendLog, getLog] = room.makeAction('log');
+      const [sendChatMessage, getChat] = room.makeAction('chat');
+      getPose(fromThisRoom(receivePose));
+      getLog(fromThisRoom(receiveLog));
+      getChat(fromThisRoom(receiveChat));
+      room.onPeerJoin(fromThisRoom((peerId) => {
+        addPeer(peerId);
+        shareMyPose();
+      }));
+      room.onPeerLeave(fromThisRoom(removePeer));
+
+      currentRoom = room;
+      roomName = name;
+      sendPoseAction = sendPose;
+      sendLogAction = sendLog;
+      sendChatAction = sendChatMessage;
+      joinedAt = performance.now();
+      roomState = 'online';
+      clearTimeout(roomCheckTimer);
+      if (name === ROOM_NAMES[0]) {
+        roomCheckTimer = setTimeout(checkRoomFull, ROOM_SETTLE_MS);
+      }
+      showPeopleCount();
+    }
+
+    function checkRoomFull() {
+      if (roomName !== ROOM_NAMES[0] || !currentRoom) return;
+      const now = performance.now();
+      const myAge = readMyAge();
+      let olderPeople = 0;
+      for (const peer of peers.values()) {
+        if (!peer.target) continue;
+        const peerAge = peer.target.age + (now - peer.lastSeen) / 1000;
+        if (peerAge > myAge) olderPeople += 1;
+      }
+      if (olderPeople >= ROOM_LIMIT) moveToRoom(ROOM_NAMES[1]);
+    }
+
+    function moveToRoom(name) {
+      const oldRoom = currentRoom;
+      currentRoom = null;
+      sendPoseAction = null;
+      sendLogAction = null;
+      sendChatAction = null;
+      try {
+        oldRoom.leave();
+      } catch (error) {
+        // 이미 끊긴 방이면 그냥 넘어간다
+      }
+      for (const peerId of [...peers.keys()]) removePeer(peerId);
+      joinRoomByName(name);
+      showHint(`${ROOM_NAMES[0]} 방이 꽉 차서 ${name} 방으로 옮겼어요`);
+    }
+
     async function connectRoom() {
       try {
         if (!window.isSecureContext || !window.crypto?.subtle) {
           throw new Error('https나 내 컴퓨터 파일로 열지 않아 암호화 기능을 쓸 수 없어요');
         }
         const { joinRoom } = await import(TRYSTERO_URL);
-        const room = joinRoom({ appId: APP_ID }, ROOM_NAME);
-        const [sendPose, getPose] = room.makeAction('pose');
-        const [sendLog, getLog] = room.makeAction('log');
-        getPose(receivePose);
-        getLog(receiveLog);
-        const [sendChatMessage, getChat] = room.makeAction('chat');
-        getChat(receiveChat);
-        sendChatAction = sendChatMessage;
-        room.onPeerJoin((peerId) => {
-          addPeer(peerId);
-          shareMyPose();
-        });
-        room.onPeerLeave(removePeer);
-        sendPoseAction = sendPose;
-        sendLogAction = sendLog;
-        joinedAt = performance.now();
-        roomState = 'online';
+        joinRoomFunction = joinRoom;
+        joinRoomByName(ROOM_NAMES[0]);
         setInterval(shareMyPose, POSE_INTERVAL_MS);
-        window.addEventListener('pagehide', () => room.leave());
+        window.addEventListener('pagehide', () => {
+          if (currentRoom) currentRoom.leave();
+        });
       } catch (error) {
         roomState = 'solo';
         console.warn('함께 보기 연결을 못 해 혼자 모드로 둡니다.', error);
