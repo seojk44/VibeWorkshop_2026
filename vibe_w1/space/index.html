@@ -20,7 +20,7 @@
     #hint {
       position: fixed;
       left: 50%;
-      bottom: 24px;
+      bottom: 92px;
       transform: translateX(-50%);
       max-width: calc(100% - 32px);
       padding: 8px 14px;
@@ -34,10 +34,48 @@
     #hint.hidden {
       opacity: 0;
     }
+    #logCount {
+      position: fixed;
+      left: 50%;
+      top: 16px;
+      transform: translateX(-50%);
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(10, 12, 24, 0.6);
+      font-size: 15px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    #addLogButton {
+      position: fixed;
+      left: 50%;
+      bottom: max(24px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      min-width: 160px;
+      min-height: 48px;
+      padding: 0 24px;
+      border: 1px solid rgba(255, 190, 120, 0.6);
+      border-radius: 999px;
+      background: rgba(120, 52, 18, 0.85);
+      color: #fff1dc;
+      font: inherit;
+      font-size: 16px;
+      cursor: pointer;
+      transition: opacity 0.3s, background 0.3s;
+    }
+    #addLogButton:active {
+      transform: translateX(-50%) scale(0.96);
+    }
+    #addLogButton.far {
+      opacity: 0.45;
+      background: rgba(60, 40, 30, 0.85);
+    }
   </style>
 </head>
 <body>
   <div id="hint">three.js를 불러오는 중…</div>
+  <div id="logCount">오늘 넣은 장작 0개</div>
+  <button id="addLogButton" type="button">장작 넣기</button>
 
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
@@ -47,8 +85,19 @@
     const TURN_SPEED = 2.6;
     const CAMERA_DISTANCE = 7;
     const CAMERA_HEIGHT = 3.6;
+    const FIRE_REACH = 3;
+    const FIRE_BOOST_SECONDS = 3;
+    const LEAN_SECONDS = 0.7;
+    const LOG_STORAGE_KEY = 'online-campfire-log-count';
 
     const hint = document.getElementById('hint');
+    const logCountLabel = document.getElementById('logCount');
+    const addLogButton = document.getElementById('addLogButton');
+    let hintTimer = null;
+    let fireBoostStart = -Infinity;
+    let leanStart = -Infinity;
+    let logDate = '';
+    let logCount = 0;
     const pressedKeys = new Set();
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -286,16 +335,108 @@
     let walkTarget = null;
     let walkTime = 0;
 
+    function readFireBoost(time) {
+      const progress = (time - fireBoostStart) / FIRE_BOOST_SECONDS;
+      if (progress < 0 || progress >= 1) return 0;
+      if (progress < 0.15) return Math.sin((progress / 0.15) * Math.PI / 2);
+      const fall = (progress - 0.15) / 0.85;
+      return 0.5 + Math.cos(fall * Math.PI) * 0.5;
+    }
+
     function flickerFire(time) {
+      const boost = readFireBoost(time);
+      const width = 1 + boost * 0.6;
+      const height = 1 + boost * 1.1;
       for (const flame of campfire.flames) {
         const phase = flame.userData.phase;
         const wave = Math.sin(time * 7 + phase) * 0.12 + Math.sin(time * 13 + phase * 2) * 0.06;
-        flame.scale.set(1 + wave * 0.4, 1 + wave + Math.random() * 0.05, 1 + wave * 0.4);
+        flame.scale.set(
+          (1 + wave * 0.4) * width,
+          (1 + wave + Math.random() * 0.05) * height,
+          (1 + wave * 0.4) * width
+        );
         flame.rotation.y = time * 0.8 + phase;
       }
       const flicker = Math.sin(time * 9) * 0.5 + Math.sin(time * 23) * 0.3 + Math.random() * 0.4;
-      campfire.light.intensity = 55 + flicker * 12;
+      campfire.light.intensity = 55 + flicker * 12 + boost * 70;
       campfire.glow.material.opacity = 0.75 + flicker * 0.1;
+      campfire.glow.scale.setScalar(1 + boost * 0.5);
+    }
+
+    function readLeanAmount(time) {
+      const progress = (time - leanStart) / LEAN_SECONDS;
+      if (progress < 0 || progress >= 1) return 0;
+      return Math.sin(progress * Math.PI) * 0.55;
+    }
+
+    function readTodayKey() {
+      const today = new Date();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      return `${today.getFullYear()}-${month}-${day}`;
+    }
+
+    function loadLogCount() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY));
+        if (saved && saved.date === readTodayKey() && Number.isInteger(saved.count) && saved.count >= 0) {
+          return saved.count;
+        }
+      } catch (error) {
+        // 저장소를 못 쓰거나 값이 깨졌으면 0부터 센다
+      }
+      return 0;
+    }
+
+    function saveLogCount(count) {
+      try {
+        localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify({ date: readTodayKey(), count }));
+      } catch (error) {
+        // 저장소를 못 써도 화면은 그대로 쓴다
+      }
+    }
+
+    function showLogCount(count) {
+      logCountLabel.textContent = `오늘 넣은 장작 ${count}개`;
+    }
+
+    function showHint(text) {
+      clearTimeout(hintTimer);
+      hint.textContent = text;
+      hint.classList.remove('hidden');
+      hintTimer = setTimeout(hideHint, 2500);
+    }
+
+    function checkNearFire() {
+      return Math.hypot(character.position.x, character.position.z) <= FIRE_REACH;
+    }
+
+    function updateLogButton() {
+      const near = checkNearFire();
+      addLogButton.classList.toggle('far', !near);
+      addLogButton.setAttribute('aria-disabled', String(!near));
+    }
+
+    function addLog() {
+      addLogButton.blur();
+      if (!checkNearFire()) {
+        showHint('불 가까이 가면 넣을 수 있어요');
+        return;
+      }
+      const today = readTodayKey();
+      if (logDate !== today) {
+        logDate = today;
+        logCount = 0;
+      }
+      logCount = Math.max(logCount, loadLogCount()) + 1;
+      saveLogCount(logCount);
+      showLogCount(logCount);
+
+      walkTarget = null;
+      character.rotation.y = Math.atan2(-character.position.x, -character.position.z);
+      const now = clock.elapsedTime;
+      leanStart = now;
+      fireBoostStart = now;
     }
 
     function readKeys() {
@@ -320,7 +461,7 @@
       character.rotation.y += THREE.MathUtils.clamp(difference, -maxStep, maxStep);
     }
 
-    function moveCharacter(delta) {
+    function moveCharacter(delta, time) {
       const keys = readKeys();
       let moving = false;
 
@@ -357,6 +498,7 @@
         doll.position.y *= 0.8;
         doll.rotation.z *= 0.8;
       }
+      doll.rotation.x = readLeanAmount(time);
 
       targetMarker.material.opacity = walkTarget ? 0.8 : Math.max(0, targetMarker.material.opacity - delta * 2);
     }
@@ -403,12 +545,14 @@
     window.addEventListener('blur', () => pressedKeys.clear());
     window.addEventListener('resize', resizeView);
     renderer.domElement.addEventListener('pointerdown', startWalkTo);
+    addLogButton.addEventListener('click', addLog);
 
     const clock = new THREE.Clock();
     function renderFrame() {
       const delta = Math.min(clock.getDelta(), 0.05);
       const time = clock.elapsedTime;
-      moveCharacter(delta);
+      moveCharacter(delta, time);
+      updateLogButton();
       flickerFire(time);
       followCamera(delta, false);
       renderer.render(scene, camera);
@@ -416,7 +560,10 @@
     }
 
     hint.textContent = 'WASD · 방향키로 걷거나, 바닥을 눌러 그곳으로 걸어가요';
-    setTimeout(hideHint, 8000);
+    hintTimer = setTimeout(hideHint, 8000);
+    logDate = readTodayKey();
+    logCount = loadLogCount();
+    showLogCount(logCount);
     followCamera(0, true);
     renderFrame();
   </script>
