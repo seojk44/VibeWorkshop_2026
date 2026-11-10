@@ -254,7 +254,8 @@
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
 
-    scene.add(new THREE.HemisphereLight(0x3a4a7a, 0x0b0f08, 0.35));
+    const skyLight = new THREE.HemisphereLight(0x3a4a7a, 0x0b0f08, 0.35);
+    scene.add(skyLight);
     const moonLight = new THREE.DirectionalLight(0x8fa6d8, 0.25);
     moonLight.position.set(-20, 30, -10);
     scene.add(moonLight);
@@ -415,9 +416,10 @@
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       const stars = new THREE.Points(
         geometry,
-        new THREE.PointsMaterial({ color: 0xdfe6ff, size: 2, sizeAttenuation: false, fog: false })
+        new THREE.PointsMaterial({ color: 0xdfe6ff, size: 2, sizeAttenuation: false, fog: false, transparent: true })
       );
       scene.add(stars);
+      return stars;
     }
 
     function createCharacter(coatColor = 0x7a3b3b) {
@@ -464,7 +466,61 @@
     const ground = createGround();
     const campfire = createCampfire();
     createTrees();
-    createStars();
+    const stars = createStars();
+
+    const TIME_SETTINGS = {
+      evening: { sky: 0x2a2350, ambient: 0.6, moon: 0.35, stars: 0.4, fireBase: 40 },
+      night: { sky: 0x070b1a, ambient: 0.35, moon: 0.25, stars: 1, fireBase: 55 },
+      dawn: { sky: 0x33405e, ambient: 0.7, moon: 0.2, stars: 0.2, fireBase: 30 }
+    };
+    const TIME_CHECK_MS = 60000;
+
+    function pickTimeOfDay(hour) {
+      if (hour >= 4 && hour < 7) return 'dawn';
+      if (hour >= 7 && hour < 20) return 'evening';
+      return 'night';
+    }
+
+    function readTimeOverride() {
+      const value = new URLSearchParams(window.location.search).get('time');
+      return Object.hasOwn(TIME_SETTINGS, value ?? '') ? value : null;
+    }
+
+    const timeOverride = readTimeOverride();
+
+    function readCurrentTimeOfDay() {
+      return timeOverride || pickTimeOfDay(new Date().getHours());
+    }
+
+    let timeTarget = TIME_SETTINGS[readCurrentTimeOfDay()];
+    const timeTargetColor = new THREE.Color(timeTarget.sky);
+    const timeLook = {
+      sky: new THREE.Color(timeTarget.sky),
+      ambient: timeTarget.ambient,
+      moon: timeTarget.moon,
+      stars: timeTarget.stars,
+      fireBase: timeTarget.fireBase
+    };
+
+    function updateTimeOfDay() {
+      if (timeOverride) return;
+      timeTarget = TIME_SETTINGS[readCurrentTimeOfDay()];
+      timeTargetColor.set(timeTarget.sky);
+    }
+
+    function applyTimeOfDay(delta) {
+      const follow = 1 - Math.exp(-delta * 0.8);
+      timeLook.sky.lerp(timeTargetColor, follow);
+      timeLook.ambient += (timeTarget.ambient - timeLook.ambient) * follow;
+      timeLook.moon += (timeTarget.moon - timeLook.moon) * follow;
+      timeLook.stars += (timeTarget.stars - timeLook.stars) * follow;
+      timeLook.fireBase += (timeTarget.fireBase - timeLook.fireBase) * follow;
+      scene.background.copy(timeLook.sky);
+      scene.fog.color.copy(timeLook.sky);
+      skyLight.intensity = timeLook.ambient;
+      moonLight.intensity = timeLook.moon;
+      stars.material.opacity = timeLook.stars;
+    }
     const character = createCharacter();
     const targetMarker = createTargetMarker();
     let walkTarget = null;
@@ -494,7 +550,7 @@
         flame.rotation.y = time * 0.8 + phase;
       }
       const flicker = Math.sin(time * 9) * 0.5 + Math.sin(time * 23) * 0.3 + Math.random() * 0.4;
-      campfire.light.intensity = 55 + flicker * 12 + boost * 70;
+      campfire.light.intensity = timeLook.fireBase + flicker * 12 + boost * 70;
       campfire.glow.material.opacity = 0.75 + flicker * 0.1;
       campfire.glow.scale.setScalar(1 + boost * 0.5);
     }
@@ -1177,6 +1233,7 @@
       moveCharacter(delta, time);
       updatePeers(delta, time);
       updateLogButton();
+      applyTimeOfDay(delta);
       flickerFire(time);
       followCamera(delta, false);
       placeChatBubbles();
@@ -1190,6 +1247,7 @@
     logCount = loadLogCount();
     showLogCount(logCount);
     followCamera(0, true);
+    setInterval(updateTimeOfDay, TIME_CHECK_MS);
     renderFrame();
     connectRoom();
   </script>
