@@ -577,6 +577,119 @@
       }
     }
 
+    const BIRD_POOL_SIZE = 12;
+    const BIRD_COLORS = [0x6b4a30, 0x7a7d85, 0x2b3550];
+    const BIRD_SPREAD = (50 * Math.PI) / 180;
+
+    function createFlyingBird(color) {
+      const bird = new THREE.Group();
+      const bodyMaterial = new THREE.MeshStandardMaterial({ color, roughness: 0.8, transparent: true });
+      const beakMaterial = new THREE.MeshStandardMaterial({ color: 0xe0a030, roughness: 0.6, transparent: true });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.12, 0.26), bodyMaterial);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.12), bodyMaterial);
+      head.position.set(0, 0.05, 0.17);
+      const beak = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 0.06), beakMaterial);
+      beak.position.set(0, 0.04, 0.26);
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.1), bodyMaterial);
+      tail.position.set(0, 0.02, -0.17);
+      bird.add(body, head, beak, tail);
+
+      const wings = [];
+      for (const side of [-1, 1]) {
+        const pivot = new THREE.Group();
+        pivot.position.set(side * 0.07, 0.03, 0);
+        const wing = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.02, 0.14), bodyMaterial);
+        wing.position.x = side * 0.11;
+        pivot.add(wing);
+        bird.add(pivot);
+        wings.push({ pivot, side });
+      }
+
+      bird.scale.setScalar(1.3);
+      bird.visible = false;
+      scene.add(bird);
+      return { bird, wings, materials: [bodyMaterial, beakMaterial] };
+    }
+
+    function createBirdPool() {
+      const pool = [];
+      for (let i = 0; i < BIRD_POOL_SIZE; i++) {
+        pool.push({ ...createFlyingBird(BIRD_COLORS[i % BIRD_COLORS.length]), active: false, plan: null, age: 0 });
+      }
+      return pool;
+    }
+
+    function planBirdFlight(center, size, fromPoint, density, random) {
+      const count = density < 0.3 ? 1 : 2 + Math.floor(random() * 3);
+      const awayAngle = Math.atan2(center.x - fromPoint.x, center.z - fromPoint.z);
+      const flights = [];
+      for (let i = 0; i < count; i++) {
+        const angle = random() * Math.PI * 2;
+        const radius = random() * 0.9 * size;
+        const heading = awayAngle + (random() * 2 - 1) * BIRD_SPREAD;
+        const speed = 4 + random() * 2;
+        flights.push({
+          x: center.x + Math.cos(angle) * radius,
+          z: center.z + Math.sin(angle) * radius,
+          startY: (2.5 + random() * 1.3) * size,
+          heading,
+          speedX: Math.sin(heading) * speed,
+          speedZ: Math.cos(heading) * speed,
+          climb: 1.5 + random(),
+          flapRate: 8 + random() * 4,
+          life: 3 + random()
+        });
+      }
+      return { flights, awayAngle };
+    }
+
+    function readBirdFlightState(plan, age) {
+      const progress = Math.min(age / plan.life, 1);
+      const easedAge = age < 0.3 ? (age * age) / 0.6 : age - 0.15;
+      return {
+        x: plan.x + plan.speedX * easedAge,
+        y: plan.startY + plan.climb * easedAge,
+        z: plan.z + plan.speedZ * easedAge,
+        heading: plan.heading,
+        wing: Math.sin(age * plan.flapRate * Math.PI * 2) * 0.9,
+        opacity: progress > 0.8 ? (1 - progress) / 0.2 : 1,
+        done: progress >= 1
+      };
+    }
+
+    const birdPool = createBirdPool();
+    let nextBirdSlot = 0;
+
+    function releaseBirds(item, fromPoint) {
+      const { flights } = planBirdFlight(item.tree.position, item.tree.scale.x, fromPoint, timeTarget.birds, Math.random);
+      for (const plan of flights) {
+        const slot = birdPool[nextBirdSlot];
+        nextBirdSlot = (nextBirdSlot + 1) % birdPool.length;
+        slot.active = true;
+        slot.plan = plan;
+        slot.age = 0;
+        slot.bird.visible = true;
+      }
+    }
+
+    function updateFlyingBirds(delta) {
+      for (const slot of birdPool) {
+        if (!slot.active) continue;
+        slot.age += delta;
+        const state = readBirdFlightState(slot.plan, slot.age);
+        if (state.done) {
+          slot.active = false;
+          slot.bird.visible = false;
+          continue;
+        }
+        slot.bird.position.set(state.x, state.y, state.z);
+        slot.bird.rotation.y = state.heading;
+        for (const wing of slot.wings) wing.pivot.rotation.z = wing.side * state.wing;
+        for (const material of slot.materials) material.opacity = state.opacity;
+      }
+    }
+
     const stars = createStars();
 
     const TIME_SETTINGS = {
@@ -747,6 +860,7 @@
       myView = { item, start: now };
       item.shakeStart = now;
       dropLeaves(item);
+      releaseBirds(item, character.position);
       soundBoostStart = now;
       wakeBirds();
       shareTreeView(item.index);
@@ -1192,6 +1306,7 @@
       peer.lookStart = now;
       trees[data.tree].shakeStart = now;
       dropLeaves(trees[data.tree]);
+      releaseBirds(trees[data.tree], peer.doll.position);
       soundBoostStart = now;
       wakeBirds();
     }
@@ -1460,6 +1575,7 @@
       applyTimeOfDay(delta);
       swayLeaves(time);
       updateFallingLeaves(delta);
+      updateFlyingBirds(delta);
       followCamera(delta, false);
       placeChatBubbles();
       renderer.render(scene, camera);
