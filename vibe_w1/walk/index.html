@@ -388,34 +388,87 @@
       return stars;
     }
 
+    function createBlock(width, height, depth, material) {
+      const block = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+      block.castShadow = true;
+      return block;
+    }
+
+    function createLimb(width, height, material, x, y) {
+      const pivot = new THREE.Group();
+      pivot.position.set(x, y, 0);
+      const block = createBlock(width, height, width, material);
+      block.position.y = -height / 2;
+      pivot.add(block);
+      return pivot;
+    }
+
     function createCharacter(coatColor = 0x7a3b3b) {
       const character = new THREE.Group();
-      const skin = new THREE.MeshStandardMaterial({ color: 0xe9c8a0, roughness: 0.7, emissive: 0x2a1c12 });
-      const coat = new THREE.MeshStandardMaterial({ color: coatColor, roughness: 0.8, emissive: 0x24100e });
-
-      const body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 24, 18), coat);
-      body.scale.set(1, 1.15, 1);
-      body.position.y = 0.5;
-      body.castShadow = true;
-
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 18), skin);
-      head.position.y = 1.17;
-      head.castShadow = true;
+      const skin = new THREE.MeshStandardMaterial({ color: 0xe9c8a0, roughness: 0.8, emissive: 0x2a1c12 });
+      const shirt = new THREE.MeshStandardMaterial({ color: coatColor, roughness: 0.8, emissive: 0x24100e });
+      const pants = new THREE.MeshStandardMaterial({ color: 0x2b3550, roughness: 0.9, emissive: 0x0a0c14 });
+      const hairMaterial = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.9 });
+      const eyeMaterial = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
 
       const doll = new THREE.Group();
-      doll.add(body, head);
 
-      const eyeMaterial = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
-      for (const side of [-1, 1]) {
-        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04, 10, 8), eyeMaterial);
-        eye.position.set(side * 0.1, 1.2, 0.27);
-        doll.add(eye);
+      const body = createBlock(0.46, 0.55, 0.26, shirt);
+      body.position.y = 0.825;
+      doll.add(body);
+
+      const legLeft = createLimb(0.2, 0.55, pants, -0.11, 0.55);
+      const legRight = createLimb(0.2, 0.55, pants, 0.11, 0.55);
+      const armLeft = createLimb(0.16, 0.55, shirt, -0.31, 1.1);
+      const armRight = createLimb(0.16, 0.55, shirt, 0.31, 1.1);
+      for (const hand of [armLeft, armRight]) {
+        const skinBlock = createBlock(0.16, 0.12, 0.16, skin);
+        skinBlock.position.y = -0.49;
+        hand.add(skinBlock);
       }
+      doll.add(legLeft, legRight, armLeft, armRight);
+
+      const head = new THREE.Group();
+      head.position.y = 1.1;
+      const face = createBlock(0.4, 0.4, 0.4, skin);
+      face.position.y = 0.2;
+      const hairTop = createBlock(0.42, 0.08, 0.42, hairMaterial);
+      hairTop.position.y = 0.38;
+      const hairBack = createBlock(0.42, 0.24, 0.06, hairMaterial);
+      hairBack.position.set(0, 0.27, -0.19);
+      head.add(face, hairTop, hairBack);
+      for (const side of [-1, 1]) {
+        const eye = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.02), eyeMaterial);
+        eye.position.set(side * 0.09, 0.22, 0.205);
+        head.add(eye);
+      }
+      doll.add(head);
 
       character.add(doll);
       character.userData.doll = doll;
+      character.userData.parts = { head, armLeft, armRight, legLeft, legRight };
+      character.userData.walkPhase = 0;
+      character.userData.walkAmount = 0;
       scene.add(character);
       return character;
+    }
+
+    function poseCharacter(target, lookUp) {
+      const { head, armLeft, armRight, legLeft, legRight } = target.userData.parts;
+      const amount = target.userData.walkAmount;
+      const swing = Math.sin(target.userData.walkPhase) * 0.6 * amount;
+      armLeft.rotation.x = swing;
+      armRight.rotation.x = -swing;
+      legLeft.rotation.x = -swing;
+      legRight.rotation.x = swing;
+      head.rotation.x = lookUp * 1.5;
+      target.userData.doll.position.y = Math.abs(Math.sin(target.userData.walkPhase)) * 0.05 * amount;
+    }
+
+    function stepWalkAnimation(target, moving, delta) {
+      const goal = moving ? 1 : 0;
+      target.userData.walkAmount += (goal - target.userData.walkAmount) * (1 - Math.exp(-delta * 10));
+      if (moving) target.userData.walkPhase += delta * 10;
     }
 
     function createTargetMarker() {
@@ -511,7 +564,6 @@
     const character = createCharacter();
     const targetMarker = createTargetMarker();
     let walkTarget = null;
-    let walkTime = 0;
     placeAtSpawn(pickSpawnPoint([]));
 
     function readSoundBoost(time) {
@@ -1081,12 +1133,14 @@
           continue;
         }
         if (!peer.target) continue;
+        const remaining = Math.hypot(peer.target.x - peer.doll.position.x, peer.target.z - peer.doll.position.z);
+        stepWalkAnimation(peer.doll, remaining > 0.05, delta);
         peer.doll.position.x += (peer.target.x - peer.doll.position.x) * follow;
         peer.doll.position.z += (peer.target.z - peer.doll.position.z) * follow;
         let turn = peer.target.ry - peer.doll.rotation.y;
         turn = Math.atan2(Math.sin(turn), Math.cos(turn));
         peer.doll.rotation.y += turn * follow;
-        peer.doll.userData.doll.rotation.x = readLookUpAmount(time, peer.lookStart);
+        poseCharacter(peer.doll, readLookUpAmount(time, peer.lookStart));
       }
     }
 
@@ -1225,19 +1279,11 @@
       }
       keepInWalkArea(character.position, walkObstacles);
 
-      const doll = character.userData.doll;
       if (moving) hasMoved = true;
       if (moving) stopMyView();
       if (myView && time - myView.start >= VIEW_SECONDS) stopMyView();
-      if (moving) {
-        walkTime += delta * 10;
-        doll.position.y = Math.abs(Math.sin(walkTime)) * 0.08;
-        doll.rotation.z = Math.sin(walkTime) * 0.06;
-      } else {
-        doll.position.y *= 0.8;
-        doll.rotation.z *= 0.8;
-      }
-      doll.rotation.x = readLookUpAmount(time, readMyViewStart());
+      stepWalkAnimation(character, moving, delta);
+      poseCharacter(character, readLookUpAmount(time, readMyViewStart()));
 
       targetMarker.material.opacity = walkTarget ? 0.8 : Math.max(0, targetMarker.material.opacity - delta * 2);
     }
